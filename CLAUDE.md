@@ -21,6 +21,16 @@ make -j"$(nproc)" check
 ./test/catch_runner "test case name"   # one Catch2 test
 ```
 
+After everything you implement, write unit tests to test the specific features you implemented, and run ALL the tests against the ELF files supplied in test/test_elfable/samples directory.
+
+Every non-trivial function gets unit tests (CTest — match the existing framework in the repo; do not introduce a second one)
+
+Format with clang-format using the repo's .clang-format; lint with clang-tidy (honor .clang-tidy). Do not reformat unrelated lines.
+
+Use clangd-lsp plugin when necessary.
+
+Use git best practices, trunk-based development, small branches and informative and standard git commit messages.
+
 ## Reference docs
 
 Read the matching file in `docs/llm/` before working in an area. Each ends with a "Known defects and traps" section.
