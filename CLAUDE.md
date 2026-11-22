@@ -2,6 +2,9 @@
 
 A fork of The Sleuth Kit, a C/C++ library (`libtsk`) for forensic analysis of disk images, volume systems and file systems.
 
+All work should be done against our fork, never upstream unless explicitly told to do so.
+And all work should be done branched out of the latest release - 4.15 tag.
+
 ## Scope
 
 Work on the C/C++ library in `tsk/` and its public API (`tsk/libtsk.h`). `tools/`, `samples/` and `test/` matter as consumers of that API. Leave the Java and Autopsy parts alone: `bindings/`, `case-uco/`, `debian/`, `rejistry++/`, `db_diff/`.
