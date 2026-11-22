@@ -1,0 +1,55 @@
+# Approximates the GNU indent profile in the per-directory .indent.pro files
+# (-kr -psl -nce -ip2 -nlp -nut): K&R braces, 4-space indent, no tabs,
+# return type on its own line for definitions, "else" on its own line,
+# continuation lines indented 4 without aligning to the open bracket.
+#
+# Most existing code was never run through clang-format. Format only the lines
+# you change (`git clang-format`), never whole files.
+---
+Language: Cpp
+BasedOnStyle: LLVM
+Standard: c++14
+ColumnLimit: 80
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
+ContinuationIndentWidth: 4
+AlignAfterOpenBracket: DontAlign
+AlignOperands: DontAlign
+AlignTrailingComments: true
+AllowShortFunctionsOnASingleLine: Empty
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+AllowShortBlocksOnASingleLine: Never
+AllowShortCaseLabelsOnASingleLine: false
+AlwaysBreakAfterReturnType: TopLevelDefinitions
+BinPackArguments: true
+BinPackParameters: true
+BreakBeforeBraces: Custom
+BraceWrapping:
+  AfterCaseLabel: false
+  AfterClass: false
+  AfterControlStatement: Never
+  AfterEnum: false
+  AfterFunction: true
+  AfterNamespace: false
+  AfterStruct: false
+  AfterUnion: false
+  AfterExternBlock: false
+  BeforeCatch: true
+  BeforeElse: true
+  BeforeWhile: false
+  IndentBraces: false
+  SplitEmptyFunction: false
+  SplitEmptyRecord: false
+  SplitEmptyNamespace: false
+IndentCaseLabels: false
+IndentExternBlock: NoIndent
+IndentPPDirectives: None
+NamespaceIndentation: None
+PointerAlignment: Right
+ReflowComments: false
+SortIncludes: Never
+SpaceAfterCStyleCast: false
+SpaceBeforeParens: ControlStatements
+...
