@@ -51,6 +51,12 @@ RUN LLVM_BIN=/usr/lib/llvm-${LLVM_VERSION}/bin \
     && ln -s "$LLVM_BIN/run-clang-tidy" /usr/local/bin/run-clang-tidy \
     && ln -s "/usr/bin/clang-tidy-diff-${LLVM_VERSION}.py" /usr/local/bin/clang-tidy-diff
 
+# configure.ac builds unit_tests/ only if it finds cppunit-config, which
+# Debian's cppunit (pkg-config only) does not ship. Provide it over pkg-config.
+RUN printf '#!/bin/sh\ncase "$1" in\n  --cflags) exec pkg-config --cflags cppunit ;;\n  --libs) exec pkg-config --libs cppunit ;;\n  --version) exec pkg-config --modversion cppunit ;;\n  *) echo "usage: cppunit-config --cflags|--libs|--version" >&2; exit 1 ;;\nesac\n' \
+        > /usr/local/bin/cppunit-config \
+    && chmod 755 /usr/local/bin/cppunit-config
+
 # Non-root user matching the usual host UID, with passwordless sudo.
 RUN groupadd --gid "${USER_GID}" "${USERNAME}" \
     && useradd --uid "${USER_UID}" --gid "${USER_GID}" -m -s /bin/bash "${USERNAME}" \
