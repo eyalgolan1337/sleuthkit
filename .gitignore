@@ -205,4 +205,10 @@ sleuthkit-*.tar.gz
 
 tests/data
 
-.claude
+# Claude Code: share project settings, keep personal ones local
+.claude/*
+!.claude/settings.json
+
+# clangd
+compile_commands.json
+.cache/

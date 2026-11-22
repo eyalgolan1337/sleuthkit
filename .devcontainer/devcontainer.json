@@ -1,0 +1,48 @@
+{
+  // GCC 16.1 development container for libtsk. See CLAUDE.md, "Development environment".
+  "name": "sleuthkit (GCC 16.1)",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "args": {
+      "LLVM_VERSION": "22",
+      "USERNAME": "dev"
+    }
+  },
+  // Mount the repo at the same absolute path as on the host, so paths in
+  // compile_commands.json, build logs and Claude Code's per-project state
+  // match on both sides.
+  "workspaceMount": "source=${localWorkspaceFolder},target=${localWorkspaceFolder},type=bind",
+  "workspaceFolder": "${localWorkspaceFolder}",
+  "remoteUser": "dev",
+  "updateRemoteUserUID": true,
+  "features": {
+    "ghcr.io/devcontainers/features/node:1": { "version": "lts" },
+    "ghcr.io/anthropics/devcontainer-features/claude-code:1": {},
+    "ghcr.io/devcontainers/features/github-cli:1": {}
+  },
+  "mounts": [
+    // Claude Code login, settings and plugins persist across container rebuilds.
+    "source=sleuthkit-claude-config-${devcontainerId},target=/home/dev/.claude,type=volume",
+    // clangd's background index survives rebuilds too.
+    "source=sleuthkit-clangd-cache-${devcontainerId},target=/home/dev/.cache,type=volume"
+  ],
+  "containerEnv": {
+    "CLAUDE_CONFIG_DIR": "/home/dev/.claude"
+  },
+  "remoteEnv": {
+    "GH_TOKEN": "${localEnv:GH_TOKEN}"
+  },
+  "postCreateCommand": ".devcontainer/post-create.sh",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "llvm-vs-code-extensions.vscode-clangd",
+        "anthropic.claude-code"
+      ],
+      "settings": {
+        "C_Cpp.intelliSenseEngine": "disabled",
+        "clangd.path": "/usr/local/bin/clangd"
+      }
+    }
+  }
+}
