@@ -44,7 +44,7 @@ The reference Linux toolchain is the devcontainer in `.devcontainer/`: GCC 16.1 
 
 ```sh
 ./bootstrap
-./configure --disable-java          # Java is probed by default; always disable it
+./configure --disable-java --without-libbfio   # Java is probed by default, always disable it; libbfio: see "Known defects and traps", item 2
 make -j"$(nproc)"                   # library, tools and samples
 make -j"$(nproc)" check             # builds and runs tests/ (and unit_tests/ if enabled)
 ```
@@ -61,8 +61,8 @@ Useful variations:
 
 ```sh
 make V=1                                       # show full compile and link commands
-./configure --disable-java --disable-shared    # static library only
-./configure --disable-java --disable-multithreading
+./configure --disable-java --without-libbfio --disable-shared    # static library only
+./configure --disable-java --without-libbfio --disable-multithreading
 ```
 
 Rules that apply to every Unix build:

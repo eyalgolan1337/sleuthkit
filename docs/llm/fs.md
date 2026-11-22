@@ -2,7 +2,7 @@
 
 The file system layer turns a byte range of a disk image into files, directories, metadata records and blocks.
 It sits above the image layer (`TSK_IMG_INFO`, see `base-and-img.md`) and the volume and pool layers (`vs-and-pool.md`), and below `TskAuto` and the C++ wrapper classes (`auto-hashdb-cpp.md`).
-Every supported file system (NTFS, FAT12/16/32, exFAT, Ext2/3/4, UFS1/2, HFS+, ISO9660, YAFFS2, XFS, Btrfs, APFS, a "logical directory" pseudo file system, raw and swap) is exposed through one C struct, `TSK_FS_INFO`, and one set of `tsk_fs_*` functions.
+Every supported file system (NTFS, FAT12/16/32, exFAT, Ext2/3/4, UFS1/2, HFS+, ISO9660, YAFFS2, APFS, a "logical directory" pseudo file system, raw and swap) is exposed through one C struct, `TSK_FS_INFO`, and one set of `tsk_fs_*` functions.
 Read this file before you call the `tsk_fs_*` API, change generic code in `tsk/fs/fs_*.c*`, or add or fix a file system implementation.
 Line numbers are omitted on purpose; every claim names a file and a symbol you can search for.
 
@@ -55,7 +55,7 @@ Fields whose meaning is not obvious:
 
 ## File map
 
-Public header: `tsk/fs/tsk_fs.h`. Do not include it directly; include `tsk/libtsk.h`. Its first roughly 1220 lines are the C API; the rest are inline C++ wrapper classes (`TskFsInfo`, `TskFsFile`, ...), covered in `auto-hashdb-cpp.md`.
+Public header: `tsk/fs/tsk_fs.h`. Do not include it directly; include `tsk/libtsk.h`. Its first roughly 1200 lines are the C API; the rest are inline C++ wrapper classes (`TskFsInfo`, `TskFsFile`, ...), covered in `auto-hashdb-cpp.md`.
 
 Internal header: `tsk/fs/tsk_fs_i.h`. It is not installed. It declares the allocators (`tsk_fs_*_alloc`, `tsk_fs_dir_add`, `tsk_fs_attr_set_run`, ...), the orphan helpers, the per-file-system `*_open` prototypes, the `tsk_fs_nofs_*` stubs, `tsk_fs_malloc`/`tsk_fs_free`, and the NTFS USN journal API (`tsk_ntfs_usnjopen`, `tsk_ntfs_usnjentry_walk`, `tsk_fs_usnjls`), which is therefore internal.
 
@@ -70,36 +70,36 @@ Generic code:
 | `fs_io.c` | `tsk_fs_read*`, `tsk_fs_read_block*`, decryption hook, raw-CD pre/post bytes |
 | `fs_block.c` | `TSK_FS_BLOCK` alloc/get/free, `tsk_fs_block_walk` dispatch |
 | `fs_inode.c` | `TSK_FS_META` alloc/reset/close, `tsk_fs_meta_walk` dispatch |
-| `fs_name.cpp` | `TSK_FS_NAME` alloc/copy/free, `tsk_fs_meta_make_ls`, `fls`-style printing |
-| `fs_file.cpp` | `TSK_FS_FILE` open/close/read/walk, `tsk_fs_file_attr_get*`, owner SID, hashing |
-| `fs_dir.cpp` | `TSK_FS_DIR` open/get/close, `tsk_fs_dir_add`, `tsk_fs_dir_walk`, `$OrphanFiles` construction |
-| `fs_attr.cpp`, `fs_attrlist.c` | Attribute and run management, `tsk_fs_attr_read`, `tsk_fs_attr_walk`, attribute lookup rules |
-| `fs_load.cpp` | `tsk_fs_load_file_action`, a file-walk callback that copies content into a buffer |
+| `fs_name.c` | `TSK_FS_NAME` alloc/copy/free, `tsk_fs_meta_make_ls`, `fls`-style printing |
+| `fs_file.c` | `TSK_FS_FILE` open/close/read/walk, `tsk_fs_file_attr_get*`, owner SID, hashing |
+| `fs_dir.c` | `TSK_FS_DIR` open/get/close, `tsk_fs_dir_add`, `tsk_fs_dir_walk`, `$OrphanFiles` construction |
+| `fs_attr.c`, `fs_attrlist.c` | Attribute and run management, `tsk_fs_attr_read`, `tsk_fs_attr_walk`, attribute lookup rules |
+| `fs_load.c` | `tsk_fs_load_file_action`, a file-walk callback that copies content into a buffer |
 | `fs_parse.c` | `tsk_fs_parse_inum` (parses `INUM[-TYPE[-ID]]`) |
-| `unix_misc.cpp` | Helpers shared by Unix-style implementations (`tsk_fs_unix_make_data_run`, `tsk_fs_unix_name_cmp`, `tsk_fs_unix_get_default_attr_type`) |
-| `nofs_misc.cpp` | `tsk_fs_nofs_*` "not supported" stubs used by raw and swap |
+| `unix_misc.c` | Helpers shared by Unix-style implementations (`tsk_fs_unix_make_data_run`, `tsk_fs_unix_name_cmp`, `tsk_fs_unix_get_default_attr_type`) |
+| `nofs_misc.c` | `tsk_fs_nofs_*` "not supported" stubs used by raw and swap |
 | `encryptionHelper.cpp` | BitLocker glue (`handleVolumeEncryption`, `read_and_decrypt_bitlocker_blocks`, `tsk_fs_get_encryption_description`) |
 | `walk_cpp.cpp` | C trampolines for C++ wrapper callbacks |
-| `*_lib.cpp` | Library halves of the CLI tools (`tsk_fs_fls`, `tsk_fs_icat`, `tsk_fs_ils`, `tsk_fs_blkls`, `tsk_fs_ifind_*`, `tsk_fs_ffind`, ...). They print to stdout and return a status. `ifind_lib.cpp` also holds `tsk_fs_path2inum`. |
+| `*_lib.c` | Library halves of the CLI tools (`tsk_fs_fls`, `tsk_fs_icat`, `tsk_fs_ils`, `tsk_fs_blkls`, `tsk_fs_ifind_*`, `tsk_fs_ffind`, `tsk_fs_usnjls`, ...). They print to stdout and return a status. `ifind_lib.c` also holds `tsk_fs_path2inum`. |
 
 Implementations:
 
 | File system | Files |
 |---|---|
-| NTFS | `ntfs.cpp`, `ntfs_dent.cpp`, `usn_journal.cpp`, `tsk_ntfs.h` |
-| FAT12/16/32 and exFAT | `fatfs.cpp` (shared opener), `fatfs_meta.cpp`, `fatfs_dent.cpp`, `fatfs_utils.c`, `fatxxfs*`, `exfatfs*`, `tsk_fatfs.h`, `tsk_fatxxfs.h`, `tsk_exfatfs.h` |
-| Ext2/3/4 | `ext2fs.cpp`, `ext2fs_dent.cpp`, `ext2fs_journal.cpp`, `tsk_ext2fs.h` |
-| UFS1/2 ("FFS") | `ffs.cpp`, `ffs_dent.cpp`, `tsk_ffs.h` |
-| HFS+ / HFSX | `hfs.cpp`, `hfs_dent.cpp`, `hfs_journal.cpp`, `hfs_unicompare.cpp`, `decmpfs.cpp`, `lzvn.c`, `tsk_hfs.h` |
-| ISO9660 | `iso9660.cpp`, `iso9660_dent.cpp`, `tsk_iso9660.h` |
+| NTFS | `ntfs.c`, `ntfs_dent.cpp`, `usn_journal.c`, `tsk_ntfs.h` |
+| FAT12/16/32 and exFAT | `fatfs.c` (shared opener), `fatfs_meta.c`, `fatfs_dent.cpp`, `fatfs_utils.c`, `fatxxfs*`, `exfatfs*`, `tsk_fatfs.h`, `tsk_fatxxfs.h`, `tsk_exfatfs.h` |
+| Ext2/3/4 | `ext2fs.c`, `ext2fs_dent.c`, `ext2fs_journal.c`, `tsk_ext2fs.h` |
+| UFS1/2 ("FFS") | `ffs.c`, `ffs_dent.c`, `tsk_ffs.h` |
+| HFS+ / HFSX | `hfs.c`, `hfs_dent.c`, `hfs_journal.c`, `hfs_unicompare.c`, `decmpfs.c`, `lzvn.c`, `tsk_hfs.h` |
+| ISO9660 | `iso9660.c`, `iso9660_dent.c`, `tsk_iso9660.h` |
 | YAFFS2 | `yaffs.cpp`, `tsk_yaffs.h` |
-| XFS | `xfs.cpp`, `xfs_dent.cpp`, `tsk_xfs.h` |
-| Btrfs | `btrfs.cpp`, `btrfs_csum.cpp`, `tsk_btrfs.h` |
 | APFS | `apfs.cpp`, `apfs_fs.cpp`, `apfs_compat.cpp`, `apfs_open.cpp`, `tsk_apfs.h(pp)`, `apfs_fs.h(pp)`, `apfs_compat.hpp` |
 | Logical directory | `logical_fs.cpp`, `tsk_logical_fs.h` |
 | Raw, swap | `rawfs.c`, `swapfs.c` |
 
-Unit tests for this layer are in `test/tsk/fs/` (see `build-and-test.md`). Runnable usage samples are in `samples/`.
+Most files are C (`.c`); `ntfs_dent.cpp`, `fatfs_dent.cpp`, `yaffs.cpp`, `logical_fs.cpp`, `walk_cpp.cpp`, `encryptionHelper.cpp` and the APFS files are C++. Headers included by the C files (`tsk_fs.h` outside its `__cplusplus` block, `tsk_fs_i.h`, the per-file-system `tsk_*.h`) must stay valid C. There is no XFS or Btrfs support in this release.
+
+Tests that exercise this layer are the standalone programs in `tests/` (`read_apis.cpp`, `fs_fname_apis.cpp`, `fs_attrlist_apis.cpp`, `fs_thread_test.cpp`, driven by `tests/runtests.sh`, which needs external test images); `unit_tests/` holds CppUnit tests for `tsk/base` only (see `build-and-test.md`). Runnable usage samples are in `samples/`.
 
 ## Which API for which task
 
@@ -247,13 +247,13 @@ The returned `TSK_FS_ATTR` pointers belong to `file->meta` and die with the file
 
 The macro for the logical directory type is `TSK_FS_TYPE_ISDIR`, not `ISLOGICAL`. `TSK_FS_TYPE_UNSUPP` (`0xffffffff`) is what `tsk_fs_type_toid*` return for an unknown name. `tsk_fs_type_toid(const TSK_TCHAR *)` only looks at the first 15 characters.
 
-Type names accepted by `tsk_fs_type_toid_utf8` are in `fs_type_table` in `fs_types.c` (`ntfs`, `fat`, `exfat`, `ext`, `ufs`, `hfs`, `iso9660`, `yaffs2`, `apfs`, `xfs`, `btrfs`, `logical`, `raw`, `swap`, plus specific subtypes). `tsk_fs_type_toname` returns the first table entry with an equal code, so a `_DETECT` code maps to the group name (`TSK_FS_TYPE_FAT_DETECT` gives `"fat"`).
+Type names accepted by `tsk_fs_type_toid_utf8` are in `fs_type_table` in `fs_types.c` (`ntfs`, `fat`, `ext`, `ufs`, `hfs`, `iso9660`, `yaffs2`, `apfs`, `logical`, `raw`, `swap`, plus specific subtypes such as `exfat`, `ext4`, `hfsp`; legacy names such as `linux-ext3` are in `fs_legacy_type_table`). `tsk_fs_type_toname` returns the first table entry with an equal code, so a `_DETECT` code maps to the group name (`TSK_FS_TYPE_FAT_DETECT` gives `"fat"`).
 
 ### Autodetection (`tsk_fs_open_img_decrypt` in `fs_open.c`)
 
 With `TSK_FS_TYPE_DETECT`, every opener in the `FS_OPENERS` table is tried, in this order, with the `test` argument set to 1:
 
-NTFS, FAT (FAT12/16/32 then exFAT), Ext2/3/4, UFS, YAFFS2, XFS, HFS (only if `TSK_USE_HFS`, default 1 in `tsk_fs_i.h`), ISO9660, APFS, Btrfs.
+NTFS, FAT (FAT12/16/32 then exFAT), Ext2/3/4, UFS, YAFFS2, HFS (only if `TSK_USE_HFS`, default 1 in `tsk_fs_i.h`), ISO9660, APFS (through `apfs_open_auto_detect`, a wrapper that drops the `test` argument).
 
 Rules:
 
@@ -264,9 +264,9 @@ Rules:
 - If `img_info->itype == TSK_IMG_TYPE_LOGICAL`, only `TSK_FS_TYPE_DETECT` and `TSK_FS_TYPE_LOGICAL` are accepted, and `logical_fs_open` is used.
 - APFS is only detected when the image is a pool image; on any other image `apfs_open` fails with `TSK_ERR_FS_ARG` and autodetect moves on.
 
-With an explicit type, the `ISxxx` macros are tested in this order: NTFS, FAT, FFS, EXT, HFS, ISO9660, RAW, SWAP, YAFFS2, BTRFS, APFS, XFS. Anything else fails with `TSK_ERR_FS_UNSUPTYPE`.
+With an explicit type, the `ISxxx` macros are tested in this order: NTFS, FAT, FFS, EXT, HFS, ISO9660, RAW, SWAP, YAFFS2, APFS. Anything else (including `TSK_FS_TYPE_LOGICAL` on a non-logical image) fails with `TSK_ERR_FS_UNSUPTYPE`.
 
-The `test` argument tells an opener it is being probed. ISO9660, YAFFS2, HFS and Btrfs read it (it changes their error handling, detection mode or verbose output); NTFS, FAT, Ext and XFS ignore it.
+The `test` argument tells an opener it is being probed. ISO9660 and YAFFS2 read it (it changes their error handling, detection mode or verbose output); HFS only passes it on when it reopens an embedded HFS+ volume; NTFS, FAT, Ext, UFS and APFS ignore it.
 
 ### Pools and APFS
 
@@ -276,23 +276,24 @@ The `test` argument tells an opener it is being probed. ISO9660, YAFFS2, HFS and
 2. `pool_img = pool->get_img_info(pool, pvol_block)`, which returns a `TSK_IMG_INFO` of type `TSK_IMG_TYPE_POOL`
 3. `fs = tsk_fs_open_img_decrypt(pool_img, offset, TSK_FS_TYPE_APFS, password)`
 
-`apfs_open` (`apfs_open.cpp`) requires a pool image and, when a type is given, exactly `TSK_FS_TYPE_APFS`. It ignores the offset argument; `fs->offset` is taken from the pool (`APFSFSCompat` constructor in `apfs_compat.cpp`). Pool details are in `vs-and-pool.md`.
+`apfs_open` (`apfs_open.cpp`, declared in `tsk_fs_i.h` with four arguments and no `test` flag) requires a pool image and a type equal to `TSK_FS_TYPE_APFS` (which is also the value of `TSK_FS_TYPE_APFS_DETECT`). It ignores the offset argument; `fs->offset` is taken from the pool (`APFSFSCompat` constructor in `apfs_compat.cpp`). Pool details are in `vs-and-pool.md`.
 
 ## Encryption
 
 | Scheme | Support | Compile-time gate |
 |---|---|---|
 | BitLocker on NTFS and FAT | Decrypts with a password or recovery password; a clear key needs no password | `HAVE_LIBMBEDTLS` |
-| APFS software encryption | Decrypts with a password | `HAVE_LIBCRYPTO` (OpenSSL) |
+| APFS software encryption | Decrypts with a password | `HAVE_LIBOPENSSL` |
 | APFS hardware (T2) encryption | Detected, not decrypted | |
 | LUKS, FileVault | Signature detection only, reported as `TSK_ERR_FS_ENCRYPTED` | |
 
 - BitLocker: `ntfs_open` and `fatfs_open` call `handleVolumeEncryption` (`encryptionHelper.cpp`) before reading the boot sector. On success it sets `fs->encryption_type`, `fs->encryption_data` (a `BitlockerParser *`), `TSK_FS_INFO_FLAG_ENCRYPTED` and `block_size`. A wrong password, a missing password, or only unsupported key protectors fail the open with `TSK_ERR_FS_BITLOCKER_ERROR`. Reads are redirected in `tsk_fs_read_block_decrypt` (`fs_io.c`) to `read_and_decrypt_bitlocker_blocks`, because BitLocker relocates some sectors.
 - `HAVE_LIBMBEDTLS` is defined only in `win32/libtsk/libtsk.vcxproj`. `configure.ac` has no check for it, so an autotools (Linux, macOS) build compiles the BitLocker handlers as no-ops: a BitLocker volume then fails to open and is reported through the generic "nothing matched" path.
-- APFS: the password goes to `APFSFileSystem`. The file system sets `TSK_FS_INFO_FLAG_ENCRYPTED` and `fs->decrypt_block`, and `tsk_fs_read_block_decrypt` calls it per block with the run's `crypto_id`. Without `HAVE_LIBCRYPTO`, `APFSFSCompat::decrypt_block` fails with "crypto library not loaded". Operational notes and limits are in `docs/encryption.md`.
-- The password is passed to every opener during autodetection too, although the comment on `tsk_fs_open_img_decrypt` says it is "only used if type is specified". Ext, UFS, XFS, Btrfs, raw and swap ignore it. The non-`_decrypt` functions pass `""`.
+- APFS: the password goes to `APFSFileSystem`. The file system sets `TSK_FS_INFO_FLAG_ENCRYPTED` and `fs->decrypt_block`, and `tsk_fs_read_block_decrypt` calls it per block with the run's `crypto_id`. Without `HAVE_LIBOPENSSL`, `APFSFSCompat::decrypt_block` fails with "crypto library not loaded".
+- `HAVE_LIBOPENSSL` is defined only in the `Release|x64` configuration of `win32/libtsk/libtsk.vcxproj`. The OpenSSL check in `configure.ac` is commented out, so autotools builds and the other Visual Studio configurations have no APFS decryption.
+- The password is passed to every opener during autodetection too, although the comment on `tsk_fs_open_img_decrypt` says it is "only used if type is specified". Ext, UFS, HFS, ISO9660, YAFFS2, raw and swap ignore it. The non-`_decrypt` functions pass `""`.
 - `tsk_fs_get_encryption_description(TSK_FS_INFO* a_fs_info, char* a_desc, size_t a_descLen)` fills a zero-terminated description for BitLocker and leaves the buffer empty otherwise.
-- `HAVE_LIBZ` gates zlib decompression of HFS+ and APFS compressed files (`decmpfs.cpp`).
+- `HAVE_LIBZ` gates zlib decompression of HFS+ and APFS compressed files (`decmpfs.c`, `hfs.c`, `apfs_compat.cpp`).
 
 ## Conventions
 
@@ -311,7 +312,7 @@ The `test` argument tells an opener it is being probed. ISO9660, YAFFS2, HFS and
 
 All walk callbacks return `TSK_WALK_RET_ENUM`. `TSK_WALK_CONT` continues. `TSK_WALK_STOP` ends the walk and the walk function returns 0. `TSK_WALK_ERROR` ends the walk and the walk function returns 1.
 
-`tsk_fs_dir_walk` (`fs_dir.cpp`, `tsk_fs_dir_walk_recursive`):
+`tsk_fs_dir_walk` (`fs_dir.c`, `tsk_fs_dir_walk_recursive`):
 
 - The `TSK_FS_FILE` passed to the callback is reused for every entry. `fs_file->name` points into the directory's name array and `fs_file->meta` is freed right after the callback returns. Do not close it, do not keep any of the three pointers, and copy what you need. Reading content inside the callback is safe.
 - `a_path` is the parent path relative to the start directory: `""` for entries of the start directory, then `"dir/sub/"` with a trailing slash and no leading slash.
@@ -336,7 +337,7 @@ All walk callbacks return `TSK_WALK_RET_ENUM`. `TSK_WALK_CONT` continues. `TSK_W
 | Object | Obtained from | Released with | Notes |
 |---|---|---|---|
 | `TSK_FS_INFO` | `tsk_fs_open_*` | `tsk_fs_close` | Must outlive every file, directory and block made from it. It does not own the `TSK_IMG_INFO`. |
-| `TSK_FS_FILE` | `tsk_fs_file_open`, `tsk_fs_file_open_meta`, `tsk_fs_dir_get`, `tsk_fs_dir_get2` | `tsk_fs_file_close` | Frees `meta`, `name` and all attributes. |
+| `TSK_FS_FILE` | `tsk_fs_file_open`, `tsk_fs_file_open_meta`, `tsk_fs_dir_get` | `tsk_fs_file_close` | Frees `meta`, `name` and all attributes. |
 | `TSK_FS_DIR` | `tsk_fs_dir_open`, `tsk_fs_dir_open_meta` | `tsk_fs_dir_close` | Frees its names and `fs_dir->fs_file`. |
 | `const TSK_FS_NAME *` | `tsk_fs_dir_get_name` | nothing | Points into the directory; valid until `tsk_fs_dir_close`. |
 | `const TSK_FS_ATTR *` | `tsk_fs_file_attr_get*` | nothing | Owned by `fs_file->meta`. |
@@ -374,7 +375,7 @@ Virtual entries are created by TSK and do not exist on disk. They are identified
 - It appears as an allocated entry of type `VIRT_DIR` in the root directory. Its metadata has flags `USED | ALLOC`, size 0 (`tsk_fs_dir_make_orphan_dir_name`, `tsk_fs_dir_make_orphan_dir_meta`).
 - Its content is built by `tsk_fs_dir_find_orphans` on first access: a recursive walk of all unallocated names from the root records every unallocated metadata address that has a name (`fs->list_inum_named`), then a walk of all `UNALLOC | USED` metadata adds every record that is not in that list. Orphan directories are descended so that their children are not also listed at the top level.
 - The first access therefore costs a full directory walk plus a full metadata walk. The result is cached in `fs->orphan_dir` for the life of the handle. A complete recursive `tsk_fs_dir_walk` from the root fills `list_inum_named` as a side effect, which saves the first of the two walks.
-- Entries are named from `meta->name2` (the name stored in the metadata record, FAT and NTFS only) when present, otherwise `OrphanFile-<address>`. Their name flag is `UNALLOC`, their name type is `UNDEF`, and `meta_seq` is `meta->seq - 1`.
+- Entries are named from `meta->name2` (the name stored in the metadata record; set by FAT, NTFS and YAFFS2, and by HFS only for its special files) when present, otherwise `OrphanFile-<address>`. Their name flag is `UNALLOC`, their name type is `UNDEF`, and `meta_seq` is `meta->seq - 1`.
 - Pass `TSK_FS_DIR_WALK_FLAG_NOORPHAN` to keep a recursive walk from descending into it. The flag only stops the recursion; the `$OrphanFiles` entry itself is still delivered to the callback.
 
 `TSK_FS_ORPHAN_STR` (`"-ORPHAN_FILE-"`) is a different thing: a path prefix used for FAT and NTFS names whose parent directory is unknown.
@@ -395,7 +396,7 @@ FAT adds the virtual files `$MBR`, `$FAT1`, `$FAT2` (names in `tsk_fatfs.h`) so 
 **NTFS**
 
 - Metadata addresses are MFT entry numbers. `first_inum` is 0 and the root directory is entry 5. `TSK_FS_INFO_FLAG_HAVE_SEQ` is set.
-- Each MFT entry has a sequence number (`meta->seq`). NTFS increments it when the entry is freed, so a name written while the file existed carries `seq - 1` once the file is deleted. `name->meta_seq`, `name->par_seq` and `TSK_FS_DIR::seq` carry the name-side values. `ntfs_inode_lookup` (`ntfs.cpp`) drops `meta` when the name's sequence does not match, applying the minus-one rule for unallocated entries.
+- Each MFT entry has a sequence number (`meta->seq`). NTFS increments it when the entry is freed, so a name written while the file existed carries `seq - 1` once the file is deleted. `name->meta_seq`, `name->par_seq` and `TSK_FS_DIR::seq` carry the name-side values. `ntfs_inode_lookup` (`ntfs.c`) drops `meta` when the name's sequence does not match, applying the minus-one rule for unallocated entries.
 - An alternate data stream (ADS) is an additional `$DATA` attribute with a non-NULL `attr->name`. To enumerate streams, iterate attributes and select `type == TSK_FS_ATTR_TYPE_NTFS_DATA`. To read one, use `tsk_fs_attr_read` or `tsk_fs_file_read_type` with its id.
 - `tsk_fs_path2inum` accepts `name:stream` in a path component and then requires an attribute with that name to exist. The result is still only a metadata address: `tsk_fs_file_open("/dir/file:stream")` followed by `tsk_fs_file_read` reads the default unnamed `$DATA`, not the named stream.
 - `meta->name2` lists the `$FILE_NAME` attributes with parent address and sequence, and `meta->time2.ntfs` holds the `$FILE_NAME` times.
@@ -405,15 +406,13 @@ FAT adds the virtual files `$MBR`, `$FAT1`, `$FAT2` (names in `tsk_fatfs.h`) so 
 
 **HFS**: only HFS+ and HFSX are supported, including one embedded in an HFS wrapper (`hfs_open` reopens at the embedded offset). A plain legacy HFS volume is rejected with `TSK_ERR_FS_MAGIC`, although the type name `hfsl` and `TSK_FS_TYPE_HFS_LEGACY` exist. Case sensitivity follows the volume.
 
-**XFS and Btrfs** are labelled "experimental" in `fs_type_table`. XFS sets no journal functions, so `fs->jopen` is NULL.
-
 **Logical directory** (`logical_fs.cpp`): presents a host directory as a file system. It exists only on images of type `TSK_IMG_TYPE_LOGICAL`. Metadata addresses encode a directory number in the high 32 bits and a file number in the low 32 bits (`tsk_logical_fs.h`; root is `LOGICAL_ROOT_INUM`, `0x100000000`). Content reads bypass the image layer through `logicalfs_read`.
 
 **Raw and swap**: one flat block range with no files. Most operations are `tsk_fs_nofs_*` stubs that fail with an "unsupported" error. `fscheck` is NULL.
 
 ## Adding or changing a file system implementation
 
-Use `btrfs.cpp` (most recent full addition) or `ext2fs.cpp` (simplest complete Unix-style one) as the template. Steps in order:
+Use `ext2fs.c` (simplest complete Unix-style one) as the template; `yaffs.cpp` shows the same pattern compiled as C++. Steps in order:
 
 1. **Info struct.** In a new `tsk_xxx.h`, define `XXX_INFO` with `TSK_FS_INFO fs_info;` as its first member.
 2. **Type.** In `tsk_fs.h`, add an unused bit to `TSK_FS_TYPE_ENUM` as `TSK_FS_TYPE_XXX`, a `TSK_FS_TYPE_XXX_DETECT` value, and a `TSK_FS_TYPE_ISXXX` macro. Add the name to `fs_type_table` in `fs_types.c`. (A comment there asks for the Java `TskData.java` to be kept in sync; Java is out of scope in this fork.)
@@ -422,7 +421,7 @@ Use `btrfs.cpp` (most recent full addition) or `ext2fs.cpp` (simplest complete U
    - On every failure path release with `tsk_fs_free`, and return NULL with an error set. Fail fast and cheaply on a bad magic value, because autodetection calls every opener on every volume.
    - Set `tag = TSK_FS_INFO_TAG`, `img_info`, `offset`, `ftype` (a specific type, never `_DETECT`), `duname`, `flags`, `endian`, `block_size`, `dev_bsize`, `block_count`, `first_block`, `last_block`, `last_block_act` (clip to the image size), `first_inum`, `root_inum`, `last_inum`, `inum_count`, `journ_inum`.
    - Reserve `last_inum` for `$OrphanFiles`: make it one past the last real metadata address.
-4. **Vtable.** Assign every pointer the generic code calls without a NULL check: `block_walk`, `block_getflags`, `inode_walk`, `file_add_meta`, `get_default_attr_type`, `load_attrs`, `istat`, `dir_open_meta`, `fsstat`, `name_cmp`, `close`. Assign `fscheck` too (existing implementations other than raw and swap do). `jopen`, `jblk_walk`, `jentry_walk` may stay NULL if there is no journal (tools test `jopen`). `fread_owner_sid` and `decrypt_block` are optional and are NULL-checked. `close` must free implementation data and finish with `tsk_fs_free`.
+4. **Vtable.** Assign every pointer the generic code calls without a NULL check: `block_walk`, `block_getflags`, `inode_walk`, `file_add_meta`, `get_default_attr_type`, `load_attrs`, `istat`, `fsstat`, `name_cmp`, `close`. Assign `dir_open_meta` as well; `tsk_fs_dir_open_meta` checks it, but without it no directory can be opened. Assign `fscheck` too (existing implementations other than raw and swap do). `jopen`, `jblk_walk`, `jentry_walk` may stay NULL if there is no journal (tools test `jopen`). `fread_owner_sid` and `decrypt_block` are optional and are NULL-checked. `close` must free implementation data and finish with `tsk_fs_free`.
 5. **`file_add_meta(fs, fs_file, addr)`.** Allocate or reuse `fs_file->meta`, fill it, return 1 on error. For `addr == TSK_FS_ORPHANDIR_INUM(fs)` fill it with `tsk_fs_dir_make_orphan_dir_meta` instead.
 6. **`load_attrs(fs_file)`.** Build `meta->attr` with `tsk_fs_attrlist_getnew`, then `tsk_fs_attr_set_run` (non-resident) or `tsk_fs_attr_set_str` (resident), and set `meta->attr_state = TSK_FS_META_ATTR_STUDIED` (or `_ERROR`). Runs must be in file-offset order. For block-pointer file systems, `tsk_fs_unix_make_data_run` may fit. For compressed content set `TSK_FS_ATTR_COMP` and provide `attr->r` and `attr->w`; `tsk_fs_attr_read` and `tsk_fs_attr_walk` dispatch to them and fail if they are NULL.
 7. **`dir_open_meta(fs, &fs_dir, addr, recursion_depth)`.** Follow `ntfs_dir_open_meta` or `ext2fs_dir_open_meta`:
@@ -435,7 +434,7 @@ Use `btrfs.cpp` (most recent full addition) or `ext2fs.cpp` (simplest complete U
    - If the implementation must walk directories from inside this function, call `tsk_fs_dir_walk_internal` and pass `recursion_depth` on, so the depth limit of 128 applies.
 8. **`inode_walk`.** Default missing flag pairs to both values. Loop to `last_inum - 1` and synthesise the `$OrphanFiles` record separately when the range includes `last_inum` and the flags include `ALLOC` and `USED`. For `TSK_FS_META_FLAG_ORPHAN`, call `tsk_fs_dir_load_inum_named(fs)` first and skip addresses for which `tsk_fs_dir_find_inum_named` returns 1. `ntfs_inode_walk` shows all three.
 9. **Registration.** In `fs_open.c`, add a row to `FS_OPENERS` (with the `_DETECT` type) and a `TSK_FS_TYPE_ISXXX` branch in the explicit-type chain of `tsk_fs_open_img_decrypt`. Position in `FS_OPENERS` only affects the order of names in a `TSK_ERR_FS_MULTTYPE` message, since every opener always runs.
-10. **Build and tests.** Add sources and headers to `Makefile.am` (the `tsk/fs/` lists) and to `win32/libtsk/libtsk.vcxproj`, and add tests under `test/tsk/fs/`. See `build-and-test.md`.
+10. **Build and tests.** The autotools build is recursive in this release: add sources to `libtskfs_la_SOURCES` in `tsk/fs/Makefile.am`, add an installed header to `nobase_include_HEADERS` in the top-level `Makefile.am`, add both to `win32/libtsk/libtsk.vcxproj`, and add CppUnit tests under `unit_tests/` (a new `unit_tests/fs/` directory; `tests/` holds only the legacy API programs). See `build-and-test.md`.
 
 When changing an existing implementation, keep these invariants: `ftype` is specific; `last_inum` is the orphan directory; every failure path of the opener calls `tsk_fs_free`; a new opener must not accept another file system's volumes, or autodetection of that file system starts failing with `TSK_ERR_FS_MULTTYPE`.
 
@@ -444,30 +443,31 @@ When changing an existing implementation, keep these invariants: `ftype` is spec
 - `tsk/docs/fs.dox`, "Virtual Files": says the virtual status of `$OrphanFiles` shows in `TSK_FS_META::flags`. There is no such flag; it shows in `meta->type` (`TSK_FS_META_TYPE_VIRT_DIR`) and `name->type`.
 - `tsk/docs/fs.dox`, "Reading File Content": says the file-walk address is 0 for "sparse, compressed, or non-resident" data. The code passes the real address for non-resident raw blocks and 0 for resident, sparse and compressed data.
 - `fs_open.c`, comment on `tsk_fs_open_img_decrypt`: says the password is only used when a type is specified. It is also used during autodetection.
-- `tsk_fs.h`: the comment above `TSK_FS_TYPE_ISXFS` says "YAFFS2". `TSK_FS_TYPE_ISAPFS` is defined twice with identical bodies.
-- `fs.dox` does not mention the `_decrypt` open variants, `tsk_fs_dir_get2`, `tsk_fs_dir_get_name`, or the reordering of root directory entries.
-- `docs/encryption.md` says "APFS and NTFS volume level encryption"; the NTFS part is BitLocker, it also applies to FAT, and it depends on `HAVE_LIBMBEDTLS`.
+- `tsk_fs.h`: `TSK_FS_TYPE_ISAPFS` is defined twice with identical bodies, and the comment above the first definition says "YAFFS2".
+- `fs.dox` does not mention the `_decrypt` open variants, `tsk_fs_dir_get_name`, or the reordering of root directory entries.
 
 ## Known defects and traps
 
-Each item was confirmed by reading the named symbol in this repository.
+Each item was confirmed by reading the named symbol in this repository at release 4.15.0.
 
 1. **`tsk_fs_open_pool`, `tsk_fs_open_pool_decrypt`** (`tsk_fs.h`): declared, never defined. Using them is a link error.
-2. **BitLocker is absent from autotools builds** (`encryptionHelper.cpp`, `fs_io.c`, `#ifdef HAVE_LIBMBEDTLS`): the macro is only defined by the Visual Studio project.
+2. **BitLocker and APFS decryption are absent from autotools builds** (`encryptionHelper.cpp`, `fs_io.c`, `#ifdef HAVE_LIBMBEDTLS`; `apfs_compat.cpp`, `apfs_fs.cpp`, `#ifdef HAVE_LIBOPENSSL`): both macros are only defined by the Visual Studio project, and `HAVE_LIBOPENSSL` only in its `Release|x64` configuration.
 3. **A BitLocker error overrides a successful detection** (`fs_open.c`, `tsk_fs_open_img_decrypt`, variable `haveErrorToPreserve`): if any opener reported `TSK_ERR_FS_BITLOCKER_ERROR`, the function returns NULL with that error after the loop, even when another opener succeeded, and the successful handle `fs_first` is not closed (leak). Only reachable when BitLocker support is compiled in.
 4. **`tsk_fs_block_get` and `tsk_fs_block_get_flag` do not decrypt** (`fs_block.c`): they call `tsk_img_read` directly, so on a BitLocker or encrypted APFS volume the buffer is ciphertext (and BitLocker's relocated sectors are not followed). They also ignore `block_pre_size`/`block_post_size`. `tsk_fs_read_block`, `tsk_fs_read` and the file and attribute readers do decrypt.
 5. **`tsk_fs_block_get` crashes on a NULL file system** (`fs_block.c`): it calls `a_fs->block_getflags` before the NULL check in `tsk_fs_block_get_flag`. `tsk_fs_block_get_flag` does not check the result of its internal `tsk_fs_block_alloc`, and when the read fails it returns NULL without freeing a block it allocated itself. `tsk_fs_block_free` has no NULL or tag check.
-6. **`TSK_FS_FILE_WALK_FLAG_AONLY` gives the callback an unusable buffer pointer** (`fs_attr.cpp`, `tsk_fs_attr_walk_nonres`, `tsk_fs_attr_walk_res`): no buffer is allocated, and the callback receives `&buf[skip_remain]` with `buf == NULL`, that is NULL or NULL plus `nrd.skiplen`. `a_len` is still non-zero. Never touch `a_buf` in an `AONLY` walk, and do not rely on it being NULL.
-7. **`tsk_fs_dir_walk` reorders the root directory** (`fs_dir.cpp`, `prioritizeDirNames`): when the walked directory is `fs->root_inum`, entries whose names start (case-insensitively) with `Users`, `Documents and Settings`, `home` or `ProgramData` come first, then everything else, then `Windows` and `$Orphan...`, then `pagefile...` and `hiberfil...`. The match is a prefix match, so `homework` is also promoted. `tsk_fs_dir_get` index order is not affected.
-8. **`tsk_fs_dir_get` / `tsk_fs_dir_get2` can return a file with `meta == NULL`** (`fs_dir.cpp`): when `load_attributes` is 0, when the name is unallocated with address 0, when loading fails (the error is cleared), or when `meta->seq != name->meta_seq`. That last comparison is a strict equality without the minus-one rule that `ntfs_inode_lookup` applies; reading the two functions together, a deleted NTFS file can come back without `meta` from `tsk_fs_dir_get` while `tsk_fs_dir_walk` delivers it with `meta`. This consequence is derived from the code and was not tested on an image.
-9. **Leaks on allocation failure in `tsk_fs_dir_get2`** (`fs_dir.cpp`): if `tsk_fs_name_alloc` or `tsk_fs_name_copy` fails, the new `TSK_FS_FILE` is not freed.
-10. **Leak in `tsk_fs_dir_open`** (`fs_dir.cpp`): if `tsk_fs_dir_open_meta` fails after the path was resolved, the allocated `fs_name` is not freed.
-11. **`tsk_fs_file_open` hides sequence mismatches** (`fs_file.cpp`): after resolving the path it overwrites `name->meta_seq` with `meta->seq`. `tsk_fs_path2inum` prefers an allocated name but falls back to an unallocated one, so opening the path of a deleted file can return the metadata of whatever now occupies that address. Check `name->flags` and `meta->flags`.
-12. **`tsk_fs_dir_add` deduplicates** (`fs_dir.cpp`): two entries with the same metadata address and name collapse into one, and an allocated entry replaces an unallocated one. A directory listing is therefore not a one-to-one image of the on-disk entries (except on FAT).
-13. **Depth-limit path in `tsk_fs_dir_walk_recursive`** (`fs_dir.cpp`): when `MAX_DEPTH` or `DIR_STRSZ` would be exceeded, the function returns `TSK_WALK_ERROR` for the directory being listed, so its remaining entries are skipped; the address just pushed on `stack_seen` is not popped.
+6. **`TSK_FS_FILE_WALK_FLAG_AONLY` gives the callback an unusable buffer pointer** (`fs_attr.c`, `tsk_fs_attr_walk_nonres`, `tsk_fs_attr_walk_res`): no buffer is allocated; the resident walk passes NULL and the non-resident walk passes `&buf[skip_remain]` with `buf == NULL`, that is NULL or NULL plus `nrd.skiplen`. `a_len` is still non-zero. Never touch `a_buf` in an `AONLY` walk, and do not rely on it being NULL.
+7. **`tsk_fs_dir_walk` reorders the root directory** (`fs_dir.c`, `prioritizeDirNames`): when the walked directory is `fs->root_inum`, entries whose names start (case-insensitively) with `Users`, `Documents and Settings`, `home` or `ProgramData` come first, then everything else, then `Windows` and `$Orphan...`, then `pagefile...` and `hiberfil...`. The match is a prefix match, so `homework` is also promoted. `tsk_fs_dir_get` index order is not affected.
+8. **`tsk_fs_dir_get` can return a file with `meta == NULL`** (`fs_dir.c`): when the name is unallocated with address 0, when loading fails (the error is cleared), or when `meta->seq != name->meta_seq`. That last comparison is a strict equality without the minus-one rule that `ntfs_inode_lookup` applies; reading the two functions together, a deleted NTFS file can come back without `meta` from `tsk_fs_dir_get` while `tsk_fs_dir_walk` delivers it with `meta`. This consequence is derived from the code and was not tested on an image.
+9. **Leaks on allocation failure in `tsk_fs_dir_get`** (`fs_dir.c`): if `tsk_fs_name_alloc` or `tsk_fs_name_copy` fails, the new `TSK_FS_FILE` is not freed.
+10. **Leak in `tsk_fs_dir_open`** (`fs_dir.c`): if `tsk_fs_dir_open_meta` fails after the path was resolved, the allocated `fs_name` is not freed.
+11. **`tsk_fs_file_open` hides sequence mismatches** (`fs_file.c`): after resolving the path it overwrites `name->meta_seq` with `meta->seq`. `tsk_fs_path2inum` prefers an allocated name but falls back to an unallocated one, so opening the path of a deleted file can return the metadata of whatever now occupies that address. Check `name->flags` and `meta->flags`.
+12. **`tsk_fs_dir_add` deduplicates** (`fs_dir.c`): two entries with the same metadata address and name collapse into one, and an allocated entry replaces an unallocated one. A directory listing is therefore not a one-to-one image of the on-disk entries (except on FAT).
+13. **Depth-limit path in `tsk_fs_dir_walk_recursive`** (`fs_dir.c`): when `MAX_DEPTH` or `DIR_STRSZ` would be exceeded, the function returns `TSK_WALK_ERROR` for the directory being listed, so its remaining entries are skipped; the address just pushed on `stack_seen` is not popped.
 14. **`tsk_fs_meta_walk` with a NULL or invalid handle** (`fs_inode.c`) returns 1 without setting an error.
-15. **`tsk_fs_file_attr_getsize` hides errors** (`fs_file.cpp`): it returns 0 and clears the error when attributes cannot be loaded, so "no attributes" and "corrupt file" look the same.
-16. **`fatfs_open` falls back to FAT12/16/32 for an explicit exFAT request** (`fatfs.cpp`, final `if`): the last operand `fatxxfs_open(fatfs) == 0` is unconditional, so it also runs after `exfatfs_open` failed for `TSK_FS_TYPE_EXFAT`, and a second time after both failed for `TSK_FS_TYPE_FAT_DETECT`.
-17. **`tsk_fs_ifind_path` leaks on Windows** (`ifind_lib.cpp`): the UTF-8 copy of the path (`cpath`) is not freed.
+15. **`tsk_fs_file_attr_getsize` hides errors** (`fs_file.c`): it returns 0 and clears the error when attributes cannot be loaded, so "no attributes" and "corrupt file" look the same.
+16. **`fatfs_open` falls back to FAT12/16/32 for an explicit exFAT request** (`fatfs.c`, final `if`): the last operand `fatxxfs_open(fatfs) == 0` is unconditional, so it also runs after `exfatfs_open` failed for `TSK_FS_TYPE_EXFAT`, and a second time after both failed for `TSK_FS_TYPE_FAT_DETECT`.
+17. **`tsk_fs_ifind_path` leaks on Windows** (`ifind_lib.c`): the UTF-8 copy of the path (`cpath`) is not freed.
 18. **`TskFsInfo` always closes its handle** (`tsk_fs.h`, `~TskFsInfo`): wrapping a `TSK_FS_INFO *` you still own in the C++ class leads to a double close. See `auto-hashdb-cpp.md`.
 19. **`tsk_fs_fls`, `tsk_fs_ils`, `tsk_fs_icat`, `tsk_fs_ffind`, `tsk_fs_ifind_data`, `tsk_fs_ifind_par`, `tsk_fs_blk*`** print their results to stdout. They are the CLI tools in library form, not query functions; use the walk and read APIs to get data back.
+20. **Leaks in `tsk_fs_path2inum`** (`ifind_lib.c`): when a path component is not a directory it returns -1 without closing the `TSK_FS_DIR` it opened. When one directory has several unallocated names that match, an earlier match with a non-zero address is replaced without being closed, so the last unallocated match wins.
+21. **No cycle guard when appending runs** (`fs_attr.c`, `tsk_fs_attr_append_run`): the loops that find the end of the run list and renumber offsets follow `next` until NULL. If an implementation appends a run that is already in the list, which happens on some corrupt images (upstream issue #2268), they never end, and calls such as `tsk_fs_file_attr_getsize` hang.
