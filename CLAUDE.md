@@ -26,7 +26,7 @@ devcontainer exec --workspace-folder . bash         # shell inside
 devcontainer exec --workspace-folder . claude       # Claude Code inside (log in once; config persists in a volume)
 ```
 
-(`devcontainer` is `npx @devcontainers/cli`.) If you are not running inside the container (`gcc --version` is not 16.1), run build and test commands through `devcontainer exec --workspace-folder . <cmd>`.
+(`devcontainer` is `npx @devcontainers/cli@0.91.0`. Use 0.91.0 or newer: older versions hang after "Container started" on Docker 29+, whose events no longer carry the `status` field they wait for.) If you are not running inside the container (`gcc --version` is not 16.1), run build and test commands through `devcontainer exec --workspace-folder . <cmd>`.
 
 - `post-create.sh` bootstraps, configures, builds everything under bear and installs the clangd-lsp plugin.
 - `compile_commands.json` (gitignored) feeds clangd and clang-tidy. Regenerate it after adding or removing sources: `.devcontainer/build-compile-db.sh` (`--fresh` to re-run bootstrap and configure).
@@ -47,7 +47,7 @@ Tests:
 
 - Unit tests use **cppunit** (`unit_tests/`). Match it; do not introduce a second framework (no Catch2, GoogleTest or CTest). Fixtures register themselves with `CPPUNIT_TEST_SUITE_REGISTRATION`, and `unit_tests/base/test_base.cpp` runs the whole registry (there is no per-test filter). A test for another layer needs a new `unit_tests/<layer>/Makefile.am`, an entry in `SUBDIRS` in `unit_tests/Makefile.am` and in `AC_CONFIG_FILES` in `configure.ac`, then `./bootstrap`.
 - `tests/` holds API test programs and scripts. `test_libraries.sh` runs `mmls` on vmdk/vhd/E01 images. `runtests.sh` is skipped (exit 77) unless the private image set in `~/from_brian` exists.
-- `unit_tests/` is built only when configure finds cppunit (`checking for TestRunner in -lcppunit... yes`).
+- `unit_tests/` is built only when configure finds the `cppunit-config` script (`grep CPPUNIT_TRUE config.status` shows `""`, not `"#"`). Debian's cppunit doesn't ship it; the devcontainer adds a shim over pkg-config. `--disable-cppunit` has no effect (upstream quirk; `configure.ac` is deliberately left as upstream).
 
 Every non-trivial function you add or change gets cppunit unit tests for the specific behaviour. After any change, run the full `make check` in the devcontainer and report the results.
 

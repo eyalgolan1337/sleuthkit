@@ -35,6 +35,7 @@ The reference Linux toolchain is the devcontainer in `.devcontainer/`: GCC 16.1 
 - `.devcontainer/build-compile-db.sh` configures with `--disable-java --without-libbfio` (see "Known defects and traps", item 2), builds everything under `bear`, then builds the `check_PROGRAMS` (`make check TESTS=`) so `tests/` and `unit_tests/` sources are in `compile_commands.json`.
 - In the container `clangd` and `clang-tidy` are wrappers that point clang at GCC 16.1's headers (`--query-driver` and `--gcc-toolchain=/usr/local`).
 - `.clang-format` approximates the `.indent.pro` style; `.clang-tidy` enables bug-finding checks only (`bugprone-*`, `clang-analyzer-*`, `performance-*`, `portability-*`, a few `misc-*`). Both are meant for changed lines (`git clang-format`, `clang-tidy-diff`), not for whole files.
+- The image provides a `cppunit-config` shim over `pkg-config cppunit`, because Debian's cppunit lacks the script and `configure.ac` builds `unit_tests/` only when it finds it (see "Tests").
 - With this setup, `make check` at tag 4.15.0 passes: `test_base` (3 cppunit tests), `test_libraries.sh` (vmdk, vhd, E01), and `runtests.sh` skipped.
 
 ## Unix build commands
@@ -229,8 +230,9 @@ There are two test suites, both run by `make check` through automake's parallel 
 
 How cppunit is detected (`configure.ac`, `m4/cppunit.m4`):
 
-- Unless `--disable-cppunit` is given, configure tries pkg-config module `cppunit >= 1.12.1`, falls back to `AM_PATH_CPPUNIT` (the `cppunit-config` script, which Debian's cppunit 1.15.1 does not ship), and then link-checks `CppUnit::TextUi::TestRunner` ("checking for TestRunner in -lcppunit").
-- The conditionals `CPPUNIT` (which adds `unit_tests/` to `SUBDIRS`) and `HAVE_CPPUNIT` are both true only when cppunit was found and the link check passed. Upstream 4.15 set `CPPUNIT` from a separate `cppunit-config`-only probe, so the unit tests never built against a pkg-config-only cppunit and `--disable-cppunit` had no effect; this fork fixed that in `configure.ac`.
+- `AM_PATH_CPPUNIT(1.12.1)` runs unconditionally near the top of `configure.ac`. It looks only for the `cppunit-config` script (options `--with-cppunit-prefix`, `--with-cppunit-exec-prefix`, or a preset `CPPUNIT_CONFIG` variable) and calls it with `--cflags`, `--libs` and `--version`. The conditional `CPPUNIT`, which decides whether `unit_tests/` is built, is set from this result alone.
+- Later, unless `--disable-cppunit` is given, configure tries pkg-config module `cppunit >= 1.12.1`, falls back to `AM_PATH_CPPUNIT` again, and does a link check for `CppUnit::TextUi::TestRunner`. These set only the conditional `HAVE_CPPUNIT`, which no `Makefile.am` uses. See "Known defects and traps", item 18.
+- Debian's cppunit 1.15.1 ships a pkg-config file but no `cppunit-config`, so on such a system `unit_tests/` is not built. The devcontainer installs a `/usr/local/bin/cppunit-config` shim that forwards to `pkg-config cppunit`; `configure.ac` is left as upstream.
 
 Commands (run from the top of the build directory; tests use paths relative to their own directory):
 
@@ -351,7 +353,7 @@ Each item was confirmed by reading the named file.
 7. **`win32/libtsk/libtsk.vcxproj` is missing six sources** that autotools builds: `tsk/base/crc.c`, `tsk/fs/usn_journal.c`, `tsk/fs/usnjls_lib.c`, `tsk/pool/img_bfio_handle.c`, `tsk/pool/lvm_pool.cpp`, `tsk/pool/lvm_pool_compat.cpp`. It has no `LanguageStandard`, so MSVC builds with its own default rather than an explicit standard.
 8. **`Debug_NoLibs` uses different C runtimes per platform** in `libtsk.vcxproj`: `MultiThreadedDebugDLL` on `Win32`, `MultiThreadedDebug` on `x64`.
 9. **NuGet include paths are x64-only for mbedtls and OpenSSL.** `win32/NugetPackages.props` sets `MbedTlsInclude` and `OpenSslInclude` only for `x64`, but `Debug|Win32` and `Release|Win32` define `HAVE_LIBMBEDTLS`.
-10. **Most of `make check` tests nothing by default.** `tests/runtests.sh` exits 77 without `${HOME}/from_brian`; `test_libraries.sh` passes without running `mmls` when libvhdi, libvmdk and libewf are absent; `read_apis`, `fs_fname_apis` and `fs_attrlist_apis` are built but are not in `TESTS`; `unit_tests/` is skipped unless configure finds and links cppunit.
+10. **Most of `make check` tests nothing by default.** `tests/runtests.sh` exits 77 without `${HOME}/from_brian`; `test_libraries.sh` passes without running `mmls` when libvhdi, libvmdk and libewf are absent; `read_apis`, `fs_fname_apis` and `fs_attrlist_apis` are built but are not in `TESTS`; `unit_tests/` is skipped unless `cppunit-config` is found.
 11. **`tests/test_libraries.sh` needs the network.** It downloads three images from Google Drive on every run where `tests/data/` lacks them, and fails if a file is missing afterwards.
 12. **`test/tools/autotools/test_loaddb.sh` is orphaned.** No `Makefile.am` references it, and it has no skip guard for a missing `SLEUTHKIT_TEST_DATA_DIR`.
 13. **`unit_tests/base/Makefile.am` overrides user variables.** It assigns `LDFLAGS = -static`, discarding the `LDFLAGS` that configure computed, and its `AM_CPPFLAGS = -I../.. $(CPPUNIT_CFLAGS)` has no `$(srcdir)` form, so it works only in an in-tree build.
@@ -359,3 +361,4 @@ Each item was confirmed by reading the named file.
 15. **pthread link flags are dropped.** The `AX_PTHREAD` action in `configure.ac` assigns `CLIBS="$PTHREAD_LIBS $LIBS"`; nothing reads `CLIBS`, so `PTHREAD_LIBS` reaches neither the library's `LIBS` nor `tsk.pc`. Only `PTHREAD_CFLAGS` is added to `CPPFLAGS` and `LDFLAGS`. Check static linking of a consumer against the generated `tsk.pc`.
 16. **The disabled CI workflow does not match this tag.** `build-unix.yml-disabled` passes `--with-libqcow` and `--enable-address-sanitizer`, which 4.15's `configure` does not define, and reads logs from `test/`. Fix it before re-enabling.
 17. **`win32/updateAndBuildAll.py` searches fixed MSBuild paths** (Visual Studio 2019 Community, 2022 Enterprise and a legacy MSBuild 14.0 path) when `MSBuild.exe` is not on `PATH`.
+18. **`--disable-cppunit` does not disable the unit tests, and pkg-config detection does not enable them.** The conditional `CPPUNIT` that controls `SUBDIRS` comes only from the first, unconditional `AM_PATH_CPPUNIT` call in `configure.ac`, which needs `cppunit-config`. `--disable-cppunit`, the pkg-config probe and the link check only set `HAVE_CPPUNIT`, which no `Makefile.am` uses. The link check also sets `CFLAGS="$CPPUNIT_CLFAGS"` (misspelled, always empty), passes the libraries in `LDFLAGS`, and its result is ignored. A build without `cppunit-config` on `PATH` (for example the owner's production build) simply skips `unit_tests/`.
