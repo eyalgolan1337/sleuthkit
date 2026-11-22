@@ -4,7 +4,7 @@ This file covers four parts of The Sleuth Kit (TSK) C/C++ library: the `TskAuto`
 Read it before you write code that walks every file in a disk image, looks up hashes, or uses any `Tsk*` C++ class, and before you change code in `tsk/auto/` or `tsk/hashdb/`.
 It records what is expensive to find by reading the source: the control flow, ownership rules, return-value exceptions, wrong upstream documentation, and confirmed defects.
 The underlying C APIs are covered in `base-and-img.md`, `vs-and-pool.md` and `fs.md`; building and testing are covered in `build-and-test.md`.
-Line numbers are given as hints only. Search for the symbol if they have drifted.
+Checked against release 4.15.0. Line numbers are given as hints only. Search for the symbol if they have drifted.
 
 ## What a library consumer can use
 
@@ -16,7 +16,7 @@ The installed headers are listed in `nobase_include_HEADERS` in the top-level `M
 |---|---|---|
 | `tsk/auto/tsk_auto.h` | yes | `TskAuto`, `TSK_FILTER_ENUM` (C++ only) |
 | `tsk/hashdb/tsk_hashdb.h` | yes | `tsk_hdb_*` C functions, `TSK_HDB_INFO`, `TskHdbInfo` |
-| `tsk/auto/tsk_is_image_supported.h` | yes, but it includes `tsk/tsk_tools_i.h`, which is not installed | `TskIsImageSupported` |
+| `tsk/auto/tsk_is_image_supported.h` | yes, but it includes `tsk/tsk_tools_i.h`, which is not installed (it is only in `EXTRA_DIST` of `tsk/Makefile.am`) | `TskIsImageSupported` |
 | `tsk/auto/guid.h` | yes | GUID helper class |
 | `tsk/auto/tsk_case_db.h`, `tsk_db.h`, `tsk_db_sqlite.h` | no | `TskAutoDb`, `TskCaseDb`, `TskDb`, `TskDbSqlite` |
 | `tsk/hashdb/tsk_hash_info.h`, `tsk_hashdb_i.h`, `tsk/auto/tsk_auto_i.h` | no | `TskHashInfo` struct and internal declarations |
@@ -25,7 +25,7 @@ Consequences:
 
 - From installed headers, a consumer can use `TskAuto` (by subclassing it) and the `tsk_hdb_*` C functions. `TskIsImageSupported` is only usable when compiling inside the source tree.
 - `TskAutoDb`, `TskCaseDb`, `TskDb` and `TskDbSqlite` write an SQLite "case database". They exist mainly to serve the Java bindings/Autopsy and the in-tree `tsk_loaddb` tool, and they are out of scope here. `tsk/auto/tsk_db.h` states that the schema in this code is frozen and no longer matches the Java side.
-- SQLite is always part of the link. `tsk/auto/db_sqlite.cpp` and `tsk/hashdb/sqlite_hdb.cpp` are compiled into the single `libtsk` library, and when no system sqlite3 is found the bundled `vendors/sqlite3.c` is compiled in (`Makefile.am`, the `!HAVE_LIBSQLITE3` block). There is no build of libtsk without SQLite.
+- SQLite is always part of the link. `tsk/auto/db_sqlite.cpp` and `tsk/hashdb/sqlite_hdb.cpp` are compiled into the single `libtsk` library (through the convenience libraries `libtskauto.la` and `libtskhashdb.la` that `tsk/Makefile.am` merges), and when no system sqlite3 is found the bundled `tsk/auto/sqlite3.c` is compiled in (`tsk/auto/Makefile.am`, the `!HAVE_LIBSQLITE3` block). There is no build of libtsk without SQLite.
 
 ## TskAuto: mental model
 
@@ -67,7 +67,7 @@ findFilesInVs(start, vtype)
       any other error is discarded
       hasPool(start) ? findFilesInPool(start) : findFilesInFs(start)
   tsk_vs_open() succeeds:
-      filterVs(vs)                         STOP or SKIP -> return
+      filterVs(vs)                         STOP or SKIP -> return (vs is not closed)
       tsk_vs_part_walk(all partitions, volume filter flags) -> for each partition:
           filterVol(part)                  SKIP -> next partition, STOP -> end walk
           offset = part->start * vs->block_size
@@ -76,11 +76,12 @@ findFilesInVs(start, vtype)
 
 findFilesInPool(start, ptype)
   filterPool(pool)                         SKIP -> return TSK_OK, STOP -> return TSK_STOP
+                                           (either way the pool is leaked)
   APFS: for each pool volume:
       filterPoolVol(vol)                   SKIP -> next volume, STOP -> return TSK_STOP
       open the volume as an image, apfs_open(), then walk as a file system
-  LVM (only if built with HAVE_LIBVSLVM): same, using tsk_fs_open_img(DETECT)
-  any other pool type: registerError(TSK_ERR_POOL_UNSUPTYPE)
+      apfs_open() fails -> registerError(), continue with the next volume
+  any other pool type, including LVM: registerError(TSK_ERR_POOL_UNSUPTYPE), return TSK_ERR
   on success the pool stays open in m_poolInfos until closeImage()
 
 findFilesInFs / findFilesInFsRet (start, ftype)
@@ -109,7 +110,7 @@ All filters are virtual and return `TSK_FILTER_ENUM`: `TSK_FILTER_CONT` (process
 
 Rules that are not obvious from the header:
 
-- Pools are skipped by default. To traverse APFS or LVM you must override both `filterPool` and `filterPoolVol` to return `TSK_FILTER_CONT`. `TskIsImageSupported` in `tsk/auto/is_image_supported.cpp` does exactly this.
+- Pools are skipped by default. To traverse APFS you must override both `filterPool` and `filterPoolVol` to return `TSK_FILTER_CONT`. `TskIsImageSupported` in `tsk/auto/is_image_supported.cpp` does exactly this. LVM cannot be traversed by `TskAuto` in 4.15.0: `tsk_pool_open_img_sing` can open an LVM pool when built with `HAVE_LIBVSLVM`, but `findFilesInPool` has no LVM branch and registers `TSK_ERR_POOL_UNSUPTYPE` (see "Known defects and traps").
 - A filter returning STOP ends the enclosing walk but does not set the global stop flag. To stop everything, also call `setStopProcessing()`.
 - `filterFs` returning SKIP is the way to learn that a file system exists without walking its files.
 
@@ -143,27 +144,28 @@ Protected helper predicates for use inside `processFile`, all returning 1 or 0: 
 
 - `registerError()` copies the current thread's TSK error (code, `errstr`, `errstr2`) into an internal list, calls the virtual `handleError()`, resets the TSK error, and returns what `handleError()` returned.
 - `handleError()` returns 0 by default. The header says a return of 1 means "stop", but no caller inside `auto.cpp` checks the value returned by `registerError()`. To stop on an error, call `setStopProcessing()` from `handleError()`.
-- `getErrorList()` returns `const std::vector<error_record>&`, where `error_record` is `{ int code; std::string msg1; std::string msg2; }`. `resetErrorList()` clears it.
-- `static std::string errorRecordToString(const error_record &)` formats a record. It overwrites and then resets the calling thread's TSK error state.
+- `getErrorList()` returns `const std::vector<error_record>` by value (a copy on every call), where `error_record` is `{ int code; std::string msg1; std::string msg2; }`. `resetErrorList()` clears it.
+- `static std::string errorRecordToString(error_record &)` formats a record. The parameter is a non-const reference, so it cannot take the `const` elements of the vector returned by `getErrorList()`; iterate by value (as in the example below) or copy the record first. It overwrites and then resets the calling thread's TSK error state.
 - A file system that fails to open inside an unallocated partition is ignored silently. Inside an allocated partition, or with no volume system, the failure is registered with `errstr2` set to "Sector offset: N" (plus the partition description when known).
 
 Return values of the `uint8_t findFilesIn*` methods are derived from the error list: they return 1 if the list is non-empty, not if this particular call failed. Errors accumulate until `openImage*`, `openImageHandle` or `resetErrorList()` is called, so a second `findFilesIn*` call on the same open image reports 1 if the first one registered anything. `findFilesInFsRet` returns `TSK_RETVAL_ENUM` (`TSK_OK`, `TSK_ERR`, `TSK_STOP`) and follows the same rule for `TSK_ERR`. `findFilesInPool` is an exception; see "Known defects and traps".
 
 ### Passwords and encryption
 
-`setFileSystemPassword(const std::string&)` stores a password that is passed to `tsk_fs_open_img_decrypt` for every file system that `findFilesInFs*` opens (see `fs.md` for which file systems use it). The pool path does not use it: `findFilesInPool` opens APFS volumes with an empty password, and an encrypted APFS volume is registered as `TSK_ERR_FS_ENCRYPTED`, after which `findFilesInPool` returns without visiting the remaining volumes of that pool.
+`setFileSystemPassword(std::string)` (by value; `getFileSystemPassword()` returns it) stores a password that is passed to `tsk_fs_open_img_decrypt` for every file system that `findFilesInFs*` opens (see `fs.md` for which file systems use it). The pool path does not use it: `findFilesInPool` opens APFS volumes with an empty password. An APFS volume that fails to open is registered as `TSK_ERR_FS_ENCRYPTED` (with `errstr2` "Block: N") if the volume has `TSK_POOL_VOLUME_FLAG_ENCRYPTED`, otherwise with the open error, and the loop continues with the next volume of that pool.
 
 ### Other members
 
 - `setExternalFileSystemList(const std::list<TSK_FS_INFO *>&)` supplies file systems that the caller already opened. `TskAuto` reuses one when its `offset` equals the offset being opened and never closes them.
 - `findFilesInFs(TSK_FS_INFO *)` and `findFilesInFs(TSK_FS_INFO *, TSK_INUM_T)` walk a caller-owned file system, the second from a given directory inode.
-- `getCurVsPartDescr()`, `getCurVsPartFlag()` and `isCurVsValid()` describe the partition most recently visited. `isCurVsValid()` becomes true at the first partition and is never set back to false; `getCurVsPartFlag()` returns an uninitialized value before that.
+- `getImageSize()` returns the open image's size in bytes, or -1 if no image is open.
+- `getCurVsPartDescr()` (returns `std::string` by value), `getCurVsPartFlag()` and `isCurVsValid()` describe the partition most recently visited. `isCurVsValid()` becomes true at the first partition and is never set back to false; `getCurVsPartFlag()` returns an uninitialized value before that.
 - `enableImageWriter(const char *)` only has an effect on Windows. Elsewhere it leaves the writer disabled and still returns `TSK_OK`.
 - `m_tag` is a public sanity tag (`TSK_AUTO_TAG`) checked by the static walk callbacks. Do not modify it.
 
 ### Example subclass
 
-This compiles against the headers (checked with `g++ -std=c++17 -fsyntax-only`).
+This compiles against the 4.15.0 headers (checked with `g++ -std=c++17 -fsyntax-only`).
 
 ```cpp
 #include <tsk/libtsk.h>
@@ -204,7 +206,7 @@ int main(int argc, char **argv) {
     }
     lister.setFileFilterFlags(TSK_FS_DIR_WALK_FLAG_ALLOC);   // allocated names only
     uint8_t rc = lister.findFilesInImg();                    // 1 if any error was registered
-    for (const TskAuto::error_record &e : lister.getErrorList())
+    for (TskAuto::error_record e : lister.getErrorList())   // by value: errorRecordToString takes a non-const ref
         fprintf(stderr, "%s\n", TskAuto::errorRecordToString(e).c_str());
     lister.closeImage();
     return rc;
@@ -215,11 +217,11 @@ Larger real subclasses are in `tools/autotools/` (`TskRecover` in `tsk_recover.c
 
 ### TskIsImageSupported
 
-`TskIsImageSupported` (`tsk/auto/is_image_supported.cpp`) is a `TskAuto` subclass that answers "does this image contain anything TSK can read, and is it encrypted?". Its `filterFs` records that a file system was found and returns SKIP, its pool filters return CONT, and its `handleError` classifies encryption and unsupported-type error codes. The call sequence is `openImage`, `findFilesInImg`, then `isImageSupported()` / `isImageEncrypted()`. It is the best in-tree model for a subclass that inspects structure without reading files.
+`TskIsImageSupported` (`tsk/auto/is_image_supported.cpp`) is a `TskAuto` subclass that answers "does this image contain anything TSK can read, and is it encrypted?". Its `filterFs` records that a file system was found and returns SKIP, its pool filters return CONT, and its `handleError` classifies encryption (including BitLocker), unsupported-type and multiple-type error codes. The call sequence is `openImage`, `findFilesInImg`, then `isImageSupported()` / `isImageEncrypted()`, `getMessageForIsImageSupportedNat()` or `printResults()`. Its only in-tree consumer is `tools/autotools/tsk_imageinfo.cpp`. It is the best in-tree model for a subclass that inspects structure without reading files.
 
 ## Hash databases
 
-A hash database is a set of known file hashes that can be queried by hash value. The API is C, declared in `tsk/hashdb/tsk_hashdb.h`, and dispatched through function pointers stored in `TSK_HDB_INFO`. `tsk/hashdb/tsk_hashdb.cpp` holds the public functions; each calls the pointer of the same role.
+A hash database is a set of known file hashes that can be queried by hash value. The API is C, declared in `tsk/hashdb/tsk_hashdb.h`, and dispatched through function pointers stored in `TSK_HDB_INFO`. `tsk/hashdb/tsk_hashdb.c` holds the public functions; each calls the pointer of the same role.
 
 ### Database types
 
@@ -227,14 +229,14 @@ A hash database is a set of known file hashes that can be queried by hash value.
 
 | `db_type` | Format | Source file | Lookup support | Index |
 |---|---|---|---|---|
-| `TSK_HDB_DBTYPE_NSRL_ID` | NIST NSRL text | `nsrl.cpp` | MD5 or SHA-1 | external, type string `nsrl-md5` or `nsrl-sha1` |
-| `TSK_HDB_DBTYPE_MD5SUM_ID` | `md5sum` output | `md5sum.cpp` | MD5 | external, `md5sum` |
+| `TSK_HDB_DBTYPE_NSRL_ID` | NIST NSRL text | `nsrl.c` | MD5 or SHA-1 | external, type string `nsrl-md5` or `nsrl-sha1` |
+| `TSK_HDB_DBTYPE_MD5SUM_ID` | `md5sum` output | `md5sum.c` | MD5 | external, `md5sum` |
 | `TSK_HDB_DBTYPE_HK_ID` | HashKeeper | `hashkeeper.c` | MD5 | external, `hk` |
-| `TSK_HDB_DBTYPE_ENCASE_ID` | EnCase | `encase.cpp` | MD5 | external, `encase` |
-| `TSK_HDB_DBTYPE_IDXONLY_ID` | an index file with no database | `idxonly.cpp` | the index's hash type | cannot be rebuilt |
+| `TSK_HDB_DBTYPE_ENCASE_ID` | EnCase | `encase.c` | MD5 | external, `encase` |
+| `TSK_HDB_DBTYPE_IDXONLY_ID` | an index file with no database | `idxonly.c` | the index's hash type | cannot be rebuilt |
 | `TSK_HDB_DBTYPE_SQLITE_ID` | TSK SQLite (`.kdb`) | `sqlite_hdb.cpp` | MD5 only | none needed |
 
-The four text formats and the index-only type share one implementation, `binsrch_index.cpp` (struct `TSK_HDB_BINSRCH_INFO`). `hdb_base.cpp` supplies default function pointers that every type starts from.
+The four text formats and the index-only type share one implementation, `binsrch_index.cpp` (struct `TSK_HDB_BINSRCH_INFO`). `hdb_base.c` supplies default function pointers that every type starts from. In 4.15.0 every file in `tsk/hashdb/` except `binsrch_index.cpp` and `sqlite_hdb.cpp` is compiled as C (`tsk/hashdb/Makefile.am`).
 
 ### Index files (text formats)
 
@@ -277,7 +279,7 @@ Index queries: `tsk_hdb_has_idx(hdb, htype)` returns 1 if an index of that type 
 
 ### Example lookup
 
-This compiles against the headers (checked with `g++ -std=c++17 -fsyntax-only`).
+This compiles against the 4.15.0 headers (checked with `g++ -std=c++17 -fsyntax-only`).
 
 ```cpp
 #include <tsk/libtsk.h>
@@ -338,7 +340,7 @@ Common rules:
 
 | Class (header) | Constructed how | Destructor behaviour | Safe to `close()` and then destroy |
 |---|---|---|---|
-| `TskImgInfo` (`tsk_img.h`) | default + `open()`, or from `TSK_IMG_INFO *` | Always calls `tsk_img_close`, even when built from a borrowed pointer (`m_opened` is ignored). | has no `close()` |
+| `TskImgInfo` (`tsk_img.h`) | default + `open()`, or from `TSK_IMG_INFO *` | If the pointer is non-NULL, always closes it by calling `m_imgInfo->close(m_imgInfo)` directly, even when built from a borrowed pointer (`m_opened` is ignored). Calling the function pointer instead of `tsk_img_close` skips `tsk_deinit_lock(&cache_lock)`. | has no `close()` |
 | `TskVsInfo` (`tsk_vs.h`) | default + `open()`, or from `TSK_VS_INFO *` | Calls `tsk_vs_close` only if `open()` was used. | yes |
 | `TskVsPartInfo` (`tsk_vs.h`) | from `TSK_VS_PART_INFO *` | Never closes anything. | n/a |
 | `TskFsInfo` (`tsk_fs.h`) | default + `open()`, or from `TSK_FS_INFO *` | Always calls `tsk_fs_close`, even when built from a borrowed pointer. | **no** |
@@ -374,17 +376,17 @@ Common rules:
 - `TskVsPartInfo::getStart()` is in sectors. Multiply by `TskVsInfo::getBlockSize()` to get the byte offset that `TskFsInfo::open(TskImgInfo *, TSK_OFF_T, ...)` expects.
 - `TskFsMetaName::getParSeq()` has no NULL check, unlike its sibling getters.
 
-Recommendation for new code: prefer the C API (optionally with your own RAII holders such as `std::unique_ptr<TSK_FS_INFO, decltype(&tsk_fs_close)>`, the pattern `auto.cpp` uses). The wrapper classes give no extra safety and have the ownership defects listed above.
+Recommendation for new code: prefer the C API, optionally with your own RAII holders such as `std::unique_ptr<TSK_FS_INFO, decltype(&tsk_fs_close)>`. (`auto.cpp` in 4.15.0 does not use them; it pairs raw open and close calls by hand, which is the source of the leaks listed under "Known defects and traps".) The wrapper classes give no extra safety and have the ownership defects listed above.
 
 ## Samples
 
-The four programs in `samples/` are built by the normal build (targets `samples/callback_style` and so on in `Makefile.am`). Each takes one image path, tries a volume system at offset 0, falls back to a file system at offset 0, and reads the content of every regular file (the two callback samples compute its MD5). The hash lookup code in the two callback samples is compiled out (`#define DO_HASHLOOKUP 0`).
+The four programs in `samples/` are built by the normal build but not installed (`noinst_PROGRAMS = posix_style callback_style posix_cpp_style callback_cpp_style` in `samples/Makefile.am`, linked statically against `../tsk/libtsk.la`). Each takes one image path, tries a volume system at offset 0, falls back to a file system at offset 0, and reads the content of every regular file (the two callback samples compute its MD5). The hash lookup code in the two callback samples is compiled out (`#define DO_HASHLOOKUP 0`).
 
 | File | API style | Demonstrates | Use as a model? |
 |---|---|---|---|
 | `posix-style.cpp` | C, open/read/close | `tsk_vs_part_get` loop, `tsk_fs_dir_open_meta` / `tsk_fs_dir_getsize` / `tsk_fs_dir_get`, `tsk_fs_file_read` in chunks, manual recursion guarded by a `TSK_STACK`, every handle closed | Yes. Best example of correct manual ownership. |
 | `callback-style.cpp` | C, walk callbacks | `tsk_vs_part_walk`, `tsk_fs_dir_walk` with `RECURSE`, `tsk_fs_file_walk` feeding `TSK_MD5_*`, ignoring `TSK_ERR_FS_RECOVER` read errors on deleted files | Yes, except the disabled hash block. |
-| `posix-cpp-style.cpp` | C++ wrappers, open/read/close | `TskFsDir::open/getSize/getFile`, `TskFsFile::read`, `TskVsInfo::getPart` | Only for method names. It never deletes the wrappers returned by `getFile`, `getPart`, `getName`, `getMeta`. |
+| `posix-cpp-style.cpp` | C++ wrappers, open/read/close | `TskFsDir::open/getSize/getFile`, `TskFsFile::read`, `TskVsInfo::getPart` | Only for method names. It never deletes the `TskFsDir` it allocates in `procDir` or the wrappers returned by `getFile`, `getPart`, `getName`, `getMeta`, `getFsInfo`. |
 | `callback-cpp-style.cpp` | C++ wrappers, walk callbacks | `TskVsInfo::vsPartWalk`, `TskFsInfo::dirWalk`, `TskFsFile::walk` | Only for method names. See the defects below. |
 
 ## Conventions summary
@@ -396,43 +398,46 @@ The four programs in `samples/` are built by the normal build (targets `samples/
 
 ## Known defects and traps
 
-All items were confirmed by reading the cited source. None has an upstream fix in this tree.
+All items were confirmed by reading the cited source and re-checked against 4.15.0. None has an upstream fix in this tree.
 
 ### tsk/auto
 
-1. **`TskAuto::findFilesInPool` returns `TSK_RETVAL_ENUM` values in a `uint8_t`** (`auto.cpp`, around line 447). It returns `TSK_OK` (0), `TSK_ERR` (1) or `TSK_STOP` (3), while its comment promises 1/0. A caller that treats non-zero as an error misreads a stop as an error. Compare with `TSK_STOP` explicitly, as `TskAuto::vsWalkCb` does.
-2. **`TskAuto::findFilesInFs(TSK_OFF_T, TSK_FS_TYPE_ENUM, TSK_INUM_T)` mishandles external file systems** (`auto.cpp`, around line 717). When a file system from `setExternalFileSystemList` matches the offset, it walks from the root inode instead of `a_inum`, and returns a `TSK_RETVAL_ENUM` value (so `TSK_STOP` comes back as 3) instead of 0/1.
-3. **`findFilesInPool` ignores `filterPoolVol` returning SKIP for LVM pools** (`auto.cpp`, the `HAVE_LIBVSLVM` branch). Only STOP is honoured there; the APFS branch honours SKIP.
-4. **`findFilesInVs` ignores the return value of its fallback calls** to `findFilesInPool` and `findFilesInFs` when no volume system is found, so a `TSK_STOP` from the fallback is visible only through `getStopProcessing()`.
-5. **The stop flag is sticky** (`TskAuto::m_stopAllProcessing`); see "Stopping".
-6. **`handleError()`'s return value has no effect** inside `auto.cpp`; see "Error recording".
-7. **`TskAuto::getCurVsPartFlag()` reads `m_curVsPartFlag`, which the constructor does not initialize.** `isCurVsValid()` stays true after a volume system was walked, so a later `findFilesInFs` on the same instance classifies open failures using the last partition's flags.
-8. **`TskCaseDb::setNSRLHashDb` and `setKnownBadHashDb` return 1 on success** (`case_db.cpp`, `return m_NSRLDb != NULL;`), the opposite of their comments. Relevant only if you maintain the case-database code.
-9. **`tsk/auto/tsk_is_image_supported.h` is installed but includes the non-installed `tsk/tsk_tools_i.h`.** Judged from the include list and `Makefile.am`; not tested against an installed tree.
+1. **`TskAuto::findFilesInPool` returns `TSK_RETVAL_ENUM` values in a `uint8_t`** (`auto.cpp`, around line 446). It returns `TSK_OK` (0), `TSK_ERR` (1) or `TSK_STOP` (3), while its comment promises 1/0. A caller that treats non-zero as an error misreads a stop as an error. Compare with `TSK_STOP` explicitly, as `TskAuto::vsWalkCb` does.
+2. **`TskAuto::findFilesInFs(TSK_OFF_T, TSK_FS_TYPE_ENUM, TSK_INUM_T)` mishandles external file systems** (`auto.cpp`, around line 650). When a file system from `setExternalFileSystemList` matches the offset, it walks from the root inode instead of `a_inum`, and returns a `TSK_RETVAL_ENUM` value (so `TSK_STOP` comes back as 3) instead of 0/1.
+3. **`findFilesInPool` reads freed memory for any pool type other than APFS** (`auto.cpp`, the final `else` branch). It calls `tsk_pool_close(pool)` and then formats `pool->ctype` into the `TSK_ERR_POOL_UNSUPTYPE` message. An LVM pool (openable when built with `HAVE_LIBVSLVM`) reaches this branch whenever `filterPool` returns CONT, as in `TskIsImageSupported`.
+4. **`findFilesInPool` leaks the pool when `filterPool` returns SKIP or STOP** (`auto.cpp`). The early returns neither close the pool nor store it in `m_poolInfos`. With the default `filterPool` (SKIP), every pool found in the image is leaked.
+5. **`findFilesInVs` leaks the volume system when `filterVs` returns SKIP or STOP, or when the stop flag is already set** (`auto.cpp`, the early `return` after `filterVs`; the `tsk_vs_close` calls come only after `tsk_vs_part_walk`).
+6. **`findFilesInVs` ignores the return value of its fallback calls** to `findFilesInPool` and `findFilesInFs` when no volume system is found, so a `TSK_STOP` from the fallback is visible only through `getStopProcessing()`.
+7. **The stop flag is sticky** (`TskAuto::m_stopAllProcessing`); see "Stopping".
+8. **`handleError()`'s return value has no effect** inside `auto.cpp`; see "Error recording".
+9. **`TskAuto::getCurVsPartFlag()` reads `m_curVsPartFlag`, which the constructor does not initialize.** `isCurVsValid()` stays true after a volume system was walked, so a later `findFilesInFs` on the same instance classifies open failures using the last partition's flags.
+10. **`TskCaseDb::setNSRLHashDb` and `setKnownBadHashDb` return 1 on success** (`case_db.cpp`, `return m_NSRLDb != NULL;`), the opposite of their comments. Relevant only if you maintain the case-database code.
+11. **`tsk/auto/tsk_is_image_supported.h` is installed but includes the non-installed `tsk/tsk_tools_i.h`.** Judged from the include list and `Makefile.am`; not tested against an installed tree.
+12. **`TskAuto::errorRecordToString` takes `error_record &` (non-const) while `getErrorList()` returns a `const std::vector`** (`tsk_auto.h`), so `for (const auto &e : getErrorList()) errorRecordToString(e)` does not compile. Iterate by value.
 
 ### tsk/hashdb
 
-10. **`tsk_hdb_rollback_transaction` commits.** In `tsk_hashdb.cpp` it calls `hdb_info->commit_transaction(hdb_info)` where it should call `rollback_transaction`.
-11. **`sqlite_hdb_lookup_str` returns 1 ("found") for a hash string that is not 32 characters long** (`sqlite_hdb.cpp`). It sets `TSK_ERR_HDB_ARG` and then returns 1 instead of -1; the same happens if its blob allocation fails. Looking up a SHA-1 string in a SQLite database through `tsk_hdb_lookup_str` therefore reports a hit. Check the length yourself before calling. `sqlite_hdb_lookup_bin` correctly returns -1 for a wrong length.
-12. **`tsk_hdb_open_idx(NULL, ...)` returns 0**, which is its success value, although it sets `TSK_ERR_HDB_ARG`.
-13. **`tsk_hdb_has_idx` answers for whichever index is already open** (`hdb_binsrch_open_idx` returns 0 as soon as `hIdx` is non-NULL, regardless of `htype`). After an MD5 index is open, `tsk_hdb_has_idx(hdb, TSK_HDB_HTYPE_SHA1_ID)` returns 1.
-14. **`hdb_binsrch_open_idx_file` releases the handle lock on its error paths and its caller `hdb_binsrch_open_idx` releases it again** (`binsrch_index.cpp`). The lock is unlocked twice when an index is missing or malformed. The same function is also called from `hdb_binsrch_make_idx_idx`.
-15. **Text-database lookup callbacks run with the handle lock held**; re-entrant lookups on the same handle deadlock on pthread builds (see "Ownership and thread safety").
-16. **`TskHdbInfo` cannot be instantiated** (`tsk_hashdb.h`); see above.
+13. **`tsk_hdb_rollback_transaction` commits.** In `tsk_hashdb.c` it calls `hdb_info->commit_transaction(hdb_info)` where it should call `rollback_transaction`.
+14. **`sqlite_hdb_lookup_str` returns 1 ("found") for a hash string that is not 32 characters long** (`sqlite_hdb.cpp`). It sets `TSK_ERR_HDB_ARG` and then returns 1 instead of -1; the same happens if its blob allocation fails. Looking up a SHA-1 string in a SQLite database through `tsk_hdb_lookup_str` therefore reports a hit. Check the length yourself before calling. `sqlite_hdb_lookup_bin` correctly returns -1 for a wrong length.
+15. **`tsk_hdb_open_idx(NULL, ...)` returns 0**, which is its success value, although it sets `TSK_ERR_HDB_ARG`.
+16. **`tsk_hdb_has_idx` answers for whichever index is already open** (`hdb_binsrch_open_idx` returns 0 as soon as `hIdx` is non-NULL, regardless of `htype`). After an MD5 index is open, `tsk_hdb_has_idx(hdb, TSK_HDB_HTYPE_SHA1_ID)` returns 1.
+17. **`hdb_binsrch_open_idx_file` releases the handle lock on its error paths and its caller `hdb_binsrch_open_idx` releases it again** (`binsrch_index.cpp`). The lock is unlocked twice when an index is missing or malformed. The same function is also called from `hdb_binsrch_make_idx_idx`.
+18. **Text-database lookup callbacks run with the handle lock held**; re-entrant lookups on the same handle deadlock on pthread builds (see "Ownership and thread safety").
+19. **`TskHdbInfo` cannot be instantiated** (`tsk_hashdb.h`); see above.
 
 ### C++ wrappers
 
-17. **`TskImgInfo::~TskImgInfo` ignores `m_opened`** (`tsk_img.h`) and closes borrowed images. This makes the result of `TskVsInfo::getImgInfo()` dangerous to delete.
-18. **`TskFsInfo::close` and `TskFsDir::close` do not clear their pointer** (`tsk_fs.h`), so `close()` followed by destruction closes twice. `TskFsInfo` also has no owned/borrowed flag, which makes the result of `TskFsFile::getFsInfo()` dangerous to delete.
-19. **`TskFsInfo::jblkWalk` and `jentryWalk` reference undefined functions.** `tsk_fs.h` declares `tsk_fs_jblk_walk_cpp_c_cb` and `tsk_fs_jentry_walk_cpp_c_cb`; `tsk/fs/walk_cpp.cpp` defines `tsk_fs_jblk_cpp_c_cb` and `tsk_fs_jentry_cpp_c_cb`. No definition of the declared names exists in the tree, so code that calls these two methods cannot link. The bridge functions that do exist also construct a temporary `TskFsInfo` whose destructor would close the file system.
-20. **`TskFsBlock::TskFsBlock()` does not initialize `m_opened`**, which the destructor reads.
+20. **`TskImgInfo::~TskImgInfo` ignores `m_opened`** (`tsk_img.h`) and closes borrowed images, through `m_imgInfo->close` rather than `tsk_img_close`. This makes the result of `TskVsInfo::getImgInfo()` dangerous to delete.
+21. **`TskFsInfo::close` and `TskFsDir::close` do not clear their pointer** (`tsk_fs.h`), so `close()` followed by destruction closes twice. `TskFsInfo` also has no owned/borrowed flag, which makes the result of `TskFsFile::getFsInfo()` dangerous to delete.
+22. **`TskFsInfo::jblkWalk` and `jentryWalk` reference undefined functions.** `tsk_fs.h` declares `tsk_fs_jblk_walk_cpp_c_cb` and `tsk_fs_jentry_walk_cpp_c_cb`; `tsk/fs/walk_cpp.cpp` defines `tsk_fs_jblk_cpp_c_cb` and `tsk_fs_jentry_cpp_c_cb`. No definition of the declared names exists in the tree, so code that calls these two methods cannot link. The bridge functions that do exist also construct a temporary `TskFsInfo` whose destructor would close the file system.
+23. **`TskFsBlock::TskFsBlock()` does not initialize `m_opened`**, which the destructor reads.
 
 ### samples
 
-21. **`samples/callback-cpp-style.cpp`, `procFs`**: calls `fs_info->close()` and then `delete fs_info`, the double close of item 18.
-22. **`samples/callback-cpp-style.cpp`, `vsAct`**: calls `vs_info->getImgInfo()` for every partition and never deletes the result (deleting it would close the image, item 17). `dirAct` and `procFile` likewise leak the results of `getName()`, `getMeta()` and `getFsInfo()`, and test `getMeta() == NULL`, which is never true for an open file.
-23. **`samples/callback-style.cpp`, `main`, disabled hash block**: treats `tsk_hdb_open_idx(...) == 0` as "no index", but 0 means success.
-24. **`samples/callback-cpp-style.cpp`, `main`, disabled hash block**: calls `tsk_hdb_idxsetup`, which does not exist, and stores the result of `tsk_hdb_open` in a `TskHdbInfo *`.
+24. **`samples/callback-cpp-style.cpp`, `procFs`**: calls `fs_info->close()` and then `delete fs_info`, the double close of item 21.
+25. **`samples/callback-cpp-style.cpp`, `vsAct`**: calls `vs_info->getImgInfo()` for every partition and never deletes the result (deleting it would close the image, item 20). `dirAct` and `procFile` likewise leak the results of `getName()`, `getMeta()` and `getFsInfo()`, and test `getMeta() == NULL`, which is never true for an open file.
+26. **`samples/callback-style.cpp`, `main`, disabled hash block**: treats `tsk_hdb_open_idx(...) == 0` as "no index", but 0 means success.
+27. **`samples/callback-cpp-style.cpp`, `main`, disabled hash block**: calls `tsk_hdb_idxsetup`, which does not exist, and stores the result of `tsk_hdb_open` in a `TskHdbInfo *`.
 
 ### Upstream documentation that is wrong or stale
 
@@ -440,5 +445,5 @@ All items were confirmed by reading the cited source. None has an upstream fix i
 - `tsk/docs/auto.dox` does not mention pools (skipped by default), `setFileSystemPassword`, external file system lists or `findFilesInFsRet`.
 - `auto.cpp`: the comment on `setVolFilterFlags` gives the wrong default, and the comments on `findFilesInPool` give the wrong return values.
 - `tsk_auto.h`: the comment on `getErrorList` mentions `addToErrorList()`, which does not exist; the method is `registerError()`.
-- `tsk_hashdb.cpp`: the comment on `tsk_hdb_is_idx_only` mentions a `TSK_HDB_OPEN_TRY` option, which does not exist.
+- `tsk_hashdb.c`: the comment on `tsk_hdb_is_idx_only` mentions a `TSK_HDB_OPEN_TRY` option, which does not exist.
 - `tsk/docs/cpp.dox` presents the C++ classes as the thread-safe interface; they add no synchronization.
