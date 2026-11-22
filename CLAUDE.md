@@ -5,6 +5,16 @@ A fork of The Sleuth Kit, a C/C++ library (`libtsk`) for forensic analysis of di
 All work should be done against our fork, never upstream unless explicitly told to do so.
 Branch all work from `develop`, which is release 4.15.0 (tag `sleuthkit-4.15.0`) plus the fork's tooling and docs (devcontainer, format and lint configs, `CLAUDE.md`, `docs/`). Do not branch from the bare tag: it has none of those.
 
+## Upstream compatibility
+
+The fork adds features on top of upstream; it should stay easy to diff against and merge with upstream, and stay source-compatible for existing API users.
+
+- Add, don't modify. Prefer new files and new entries in existing lists (`_SOURCES`, `nobase_include_HEADERS`, vcxproj items, enum values, table rows) over editing upstream code.
+- Do not change or remove existing public API: signatures, struct layouts, existing enum values, macros, installed header names, tool options or output formats. Additions that a new feature needs are expected, for example new `TSK_FS_TYPE_ENUM` values and the matching type-table and opener entries for a new file system.
+- Avoid changing `configure.ac` and the build machinery (`m4/`, `bootstrap`, compiler flags, the C++ standard). Work around upstream build quirks outside the tree (the devcontainer does this for cppunit and libbfio) instead of fixing them here. If a change there is unavoidable, keep it to the smallest additive line and call it out in the PR.
+- Do not fix, reformat or refactor upstream code that the task does not need, including the entries under "Known defects and traps" in `docs/llm/`. Report them instead.
+- If a task seems to require breaking any of this, stop and ask first.
+
 ## Scope
 
 Work on the C/C++ library in `tsk/` and its public API (`tsk/libtsk.h`). `tools/`, `samples/`, `tests/` and `unit_tests/` matter as consumers of that API. Leave the Java and Autopsy parts alone: `bindings/`, `case-uco/`, `debian/`, `rejistry++/`, `db_diff/`.
