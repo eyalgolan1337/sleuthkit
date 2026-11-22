@@ -1,0 +1,33 @@
+# clang-tidy profile for libtsk (C and C++14/17).
+# Targets real defects, not style: the code base predates these checks, so run
+# clang-tidy on the files or lines you change, not the whole tree.
+# Needs compile_commands.json at the repo root (see .devcontainer/build-compile-db.sh).
+---
+Checks: >
+  -*,
+  bugprone-*,
+  -bugprone-easily-swappable-parameters,
+  -bugprone-reserved-identifier,
+  -bugprone-narrowing-conversions,
+  -bugprone-implicit-widening-of-multiplication-result,
+  -bugprone-assignment-in-if-condition,
+  -bugprone-macro-parentheses,
+  -bugprone-branch-clone,
+  -bugprone-switch-missing-default-case,
+  clang-analyzer-*,
+  -clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling,
+  -clang-analyzer-security.insecureAPI.strcpy,
+  performance-*,
+  -performance-enum-size,
+  portability-*,
+  -portability-avoid-pragma-once,
+  misc-redundant-expression,
+  misc-misplaced-const,
+  misc-throw-by-value-catch-by-reference,
+  misc-unconventional-assign-operator,
+  misc-new-delete-overloads,
+  misc-definitions-in-headers
+WarningsAsErrors: ''
+HeaderFilterRegex: '.*/tsk/.*'
+FormatStyle: file
+...
