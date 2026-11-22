@@ -11,28 +11,57 @@ Work on the C/C++ library in `tsk/` and its public API (`tsk/libtsk.h`). `tools/
 
 ## Toolchain
 
-- Linux: GCC 16.1. Windows: MSVC 19.41 (Visual Studio 2022 17.11). Code must build on both, as C++17.
-- The owner consumes the library through their own vcpkg port, which lives outside this repo. The in-repo builds are autotools (`configure.ac`, one non-recursive `Makefile.am`) and Visual Studio (`win32/`); there is no CMake.
-- A new source or installed header must be added to both `Makefile.am` and `win32/libtsk/libtsk.vcxproj`.
+- Linux: GCC 16.1, provided by the devcontainer (below); the host compiler is not the reference. Windows: MSVC 19.41 (Visual Studio 2022 17.11).
+- C++ standard: the target is C++17, but the in-repo builds compile as C++14 (`configure.ac` forces `-std=c++14`; `win32/libtsk/libtsk.vcxproj` sets no `LanguageStandard`, so MSVC uses its C++14 default). New code must compile as both C++14 and C++17.
+- The owner consumes the library through their own vcpkg port, which lives outside this repo. The in-repo builds are autotools (`configure.ac` plus one `Makefile.am` per directory, recursive) and Visual Studio (`win32/`); there is no CMake.
+- A new library source goes in its layer's `tsk/<layer>/Makefile.am` `_SOURCES` list and in `win32/libtsk/libtsk.vcxproj` (and `.vcxproj.filters`). A new installed header also goes in `nobase_include_HEADERS` in the top-level `Makefile.am`.
+
+## Development environment
+
+Build, test, format and lint inside the devcontainer in `.devcontainer/` (GCC 16.1 on Debian trixie, LLVM 22 clangd/clang-format/clang-tidy, bear, gdb, valgrind, cppunit, libewf/libvhdi/libvmdk/afflib, Claude Code, gh). It mounts the repo at the same absolute path as on the host, so `compile_commands.json` paths are valid on both sides.
+
+```sh
+devcontainer up --workspace-folder .                # or VS Code: "Reopen in Container"
+devcontainer exec --workspace-folder . bash         # shell inside
+devcontainer exec --workspace-folder . claude       # Claude Code inside (log in once; config persists in a volume)
+```
+
+(`devcontainer` is `npx @devcontainers/cli`.) If you are not running inside the container (`gcc --version` is not 16.1), run build and test commands through `devcontainer exec --workspace-folder . <cmd>`.
+
+- `post-create.sh` bootstraps, configures, builds everything under bear and installs the clangd-lsp plugin.
+- `compile_commands.json` (gitignored) feeds clangd and clang-tidy. Regenerate it after adding or removing sources: `.devcontainer/build-compile-db.sh` (`--fresh` to re-run bootstrap and configure).
+- Configure with `--without-libbfio` in the container (the script does). Debian's libewf exports bundled `libbfio_*` symbols, and linking the system libbfio next to it crashes every E01 close. This also turns off LVM pool support.
+- Do not mix host and container builds in one tree; run `make distclean` before switching.
 
 ## Build and test
 
 ```sh
-./bootstrap && ./configure --disable-java
+./bootstrap && ./configure --disable-java --without-libbfio
 make -j"$(nproc)"
-make -j"$(nproc)" check
-./test/catch_runner "test case name"   # one Catch2 test
+make -j"$(nproc)" check                     # all tests; needs network the first time (tests/test_libraries.sh downloads images to tests/data)
+make -C unit_tests check                    # cppunit unit tests only
+./unit_tests/base/test_base                 # run the cppunit binary directly
 ```
 
-After everything you implement, write unit tests to test the specific features you implemented, and run ALL the tests against the ELF files supplied in test/test_elfable/samples directory.
+Tests:
 
-Every non-trivial function gets unit tests (CTest — match the existing framework in the repo; do not introduce a second one)
+- Unit tests use **cppunit** (`unit_tests/`). Match it; do not introduce a second framework (no Catch2, GoogleTest or CTest). Fixtures register themselves with `CPPUNIT_TEST_SUITE_REGISTRATION`, and `unit_tests/base/test_base.cpp` runs the whole registry (there is no per-test filter). A test for another layer needs a new `unit_tests/<layer>/Makefile.am`, an entry in `SUBDIRS` in `unit_tests/Makefile.am` and in `AC_CONFIG_FILES` in `configure.ac`, then `./bootstrap`.
+- `tests/` holds API test programs and scripts. `test_libraries.sh` runs `mmls` on vmdk/vhd/E01 images. `runtests.sh` is skipped (exit 77) unless the private image set in `~/from_brian` exists.
+- `unit_tests/` is built only when configure finds cppunit (`checking for TestRunner in -lcppunit... yes`).
 
-Format with clang-format using the repo's .clang-format; lint with clang-tidy (honor .clang-tidy). Do not reformat unrelated lines.
+Every non-trivial function you add or change gets cppunit unit tests for the specific behaviour. After any change, run the full `make check` in the devcontainer and report the results.
 
-Use clangd-lsp plugin when necessary.
+Formatting and lint (configs: `.clang-format`, `.clang-tidy` at the repo root). Most existing code predates them, so touch only your own lines:
 
-Use git best practices, trunk-based development, small branches and informative and standard git commit messages.
+```sh
+git clang-format develop                    # format only lines changed since develop
+git diff -U0 develop -- tsk tools | clang-tidy-diff -p1 -path .   # lint only changed lines
+clang-tidy -p . tsk/fs/foo.cpp              # lint one file
+```
+
+Use the clangd-lsp plugin (go-to-definition, references, diagnostics) when navigating the code. It needs `compile_commands.json`.
+
+Use git best practices, trunk-based development, small branches and informative, conventional commit messages.
 
 ## Reference docs
 
