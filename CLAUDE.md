@@ -43,3 +43,17 @@ Read the matching file in `docs/llm/` before working in an area. Each ends with 
 - `docs/llm/fs.md`: file systems, files, directories, attributes, walks, encryption, adding a file system.
 - `docs/llm/auto-hashdb-cpp.md`: `TskAuto`, hash databases, the C++ wrapper classes, `samples/`.
 - `docs/llm/build-and-test.md`: repo map, build options, `HAVE_*` feature macros, installed headers, tests and test data, coding conventions, compiler portability notes.
+
+## Agent skills
+
+### Issue tracker
+
+Issues live in the fork's GitHub Issues (eyalgolan1337/sleuthkit), managed with the `gh` CLI. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Default vocabulary: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: `docs/llm/` is the per-area domain reference; a root `GLOSSARY.md` and `docs/adr/` are created only when needed. See `docs/agents/domain.md`.
