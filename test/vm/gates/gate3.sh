@@ -1,6 +1,7 @@
 # shellcheck shell=bash
 # Gate 3: Strict checks (see GLOSSARY.md, test/vm/README.md "Gate 3: Strict
-# checks"). Guest side so far; the Host-side run comes with #18.
+# checks"): the Guest-side run and the Host-side run of each partition, each
+# compared with the same Ground truth.
 #
 # The Validation VM is reachable only from the host, so on the host the
 # validate command collects the VM's results first (test/vm/collect-vm.sh,
@@ -23,6 +24,9 @@ gate3_vm() {
     if [[ -f $vm/vm.txt ]]; then
         while IFS= read -r line; do item_note "VM: $line"; done <"$vm/vm.txt"
     fi
+    if [[ -f $vm/host.txt ]]; then
+        while IFS= read -r line; do item_note "Host side: $line"; done <"$vm/host.txt"
+    fi
     if [[ -f $vm/tools.txt ]]; then
         while IFS= read -r line; do
             case $line in
@@ -41,7 +45,7 @@ gate3_vm() {
 # Strict check, Guest side, of one partition: the steps of the Strict check
 # sequence, then the comparison of the Guest-side run with Ground truth.
 gate3_strict_guest() {
-    local part=$1 mnt=$2 dir=$RUN_DIR/vm/strict-guest/$1 name rc secs ok=1 line
+    local part=$1 mnt=$2 dir=$RUN_DIR/vm/strict-guest/$1 name rc secs ok=1
     if [[ ! -f $dir/steps.tsv ]]; then
         item_fail "$mnt ($part) was not checked: the collection of the VM's results stopped before it (see the Validation VM check)"
         return 1
@@ -67,22 +71,69 @@ gate3_strict_guest() {
         item_fail "$mnt ($part): no Manifest to compare (Ground truth or the Guest-side run is missing)"
         return 1
     fi
+    gate3_compare "$dir/ground-truth.manifest" "$dir/guest.manifest" strict-guest "$part" \
+        "$dir/compare.txt" || ok=
+    [[ -n $ok ]]
+}
+
+# gate3_compare <ground truth> <run> <check> <partition> <output>: the Strict
+# comparison of a run's Manifest with Ground truth, its findings as items.
+gate3_compare() {
+    local gt=$1 run=$2 check=$3 part=$4 out=$5 rc line
     echo "== comparison"
     if ! make -s -j"$JOBS" -f test/vm/manifest/manifest.mk build/vm-tools/compare-manifests; then
         item_fail "could not build compare-manifests; see the log"
         return 1
     fi
-    build/vm-tools/compare-manifests --ground-truth "$dir/ground-truth.manifest" \
-        --run "$dir/guest.manifest" --mode strict \
-        --known-failures "$KNOWN_FAILURES" --check strict-guest --partition "$part" \
-        --items "$VALIDATE_ITEMS" | tee "$dir/compare.txt"
+    build/vm-tools/compare-manifests --ground-truth "$gt" --run "$run" --mode strict \
+        --known-failures "$KNOWN_FAILURES" --check "$check" --partition "$part" \
+        --items "$VALIDATE_ITEMS" | tee "$out"
     rc=${PIPESTATUS[0]}
     # Known failures don't appear in the items; list them, so the report
     # shows what this check tolerated.
     while IFS= read -r line; do
         item_note "Known failure: ${line#KNOWN }"
-    done < <(grep '^KNOWN ' "$dir/compare.txt")
-    [[ -n $ok ]] && ((rc == 0))
+    done < <(grep '^KNOWN ' "$out")
+    ((rc == 0))
+}
+
+# Strict check, Host side, of one partition: the Host-side run on the .vmdk
+# in its one-off container (test/vm/host-run.sh), compared with the Ground
+# truth of the same frozen window. The Guest side's check reports the steps
+# of the sequence they share.
+gate3_strict_host() {
+    local part=$1 mnt=$2 dir=$RUN_DIR/vm/strict-host/$1 gt=$RUN_DIR/vm/strict-guest/$1/ground-truth.manifest
+    local name rc secs ok=1 line
+    if [[ ! -f $dir/steps.tsv ]]; then
+        item_fail "$mnt ($part) was not checked on the Host side: the Strict check sequence stopped before the Host-side run (see the Guest side check)"
+        return 1
+    fi
+    echo "== host-run (exit status, seconds)"
+    cat "$dir/steps.tsv"
+    echo "== host-run.log"
+    cat "$dir/host-run.log"
+    # The write attempts in the one-off container: each must have failed.
+    while IFS= read -r line; do
+        case $line in
+        read-only:*) item_note "one-off container: write refused, ${line#read-only: }" ;;
+        WRITABLE:*) item_fail "one-off container: ${line#WRITABLE: } is writable; it must be mounted read-only" ;;
+        esac
+    done <"$dir/host-run.log"
+    IFS=$'\t' read -r name rc secs <"$dir/steps.tsv"
+    case $rc in
+    0 | 1) ;; # 1: an incomplete or failed run; the comparison reports it
+    3) return 1 ;; # writable paths, reported above; no Manifest
+    *)
+        item_fail "$mnt ($part): the Host-side run failed (exit $rc): $(tail -n1 "$dir/host-run.log")"
+        return 1
+        ;;
+    esac
+    if [[ ! -s $gt || ! -s $dir/host.manifest ]]; then
+        item_fail "$mnt ($part): no Manifest to compare (Ground truth or the Host-side run is missing)"
+        return 1
+    fi
+    gate3_compare "$gt" "$dir/host.manifest" strict-host "$part" "$dir/compare.txt" || ok=
+    [[ -n $ok ]]
 }
 
 gate_3() {
@@ -93,6 +144,8 @@ gate_3() {
         read -r part mnt <<<"$entry"
         run_check "strict-guest-$part" "Strict check, Guest side: $mnt ($part)" \
             gate3_strict_guest "$part" "$mnt"
+        run_check "strict-host-$part" "Strict check, Host side: $mnt ($part), .vmdk" \
+            gate3_strict_host "$part" "$mnt"
     done
     gate_end
 }

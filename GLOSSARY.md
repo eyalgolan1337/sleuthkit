@@ -9,7 +9,7 @@ The single AlmaLinux 9 virtual machine, run under VMware Workstation, whose disk
 _Avoid_: test machine, guest box
 
 **Host-side run**:
-TSK running on the host machine and reading the Validation VM's `.vmdk` while the VM is running.
+TSK running on the host machine and reading the Validation VM's `.vmdk` while the VM is running. It runs in a one-off container of the devcontainer image that sees the `.vmdk` read-only.
 _Avoid_: offline run, vmdk test
 
 **Guest-side run**:

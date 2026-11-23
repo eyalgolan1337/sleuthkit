@@ -14,7 +14,10 @@
 #   2. that Manifest matches Ground truth in a Strict comparison, apart from
 #      the differences listed in expected-differences.txt;
 #   3. a statically linked Ground truth capture writes the same Manifest;
-#   4. the harness was compiled against installed libtsk headers only.
+#   4. the harness was compiled against installed libtsk headers only;
+#   5. test/vm/host-run.sh (the Host-side run in its one-off container)
+#      refuses a writable image or directory and otherwise writes the
+#      harness's Manifest.
 #
 # Each failure is reported as a "fail" item to $VALIDATE_ITEMS when set (the
 # validate command's report protocol). Exit status 0 if all checks pass.
@@ -57,6 +60,9 @@ for prog in tsk-harness capture-ground-truth compare-manifests; do
     fi
 done
 
+# An interrupted run may have left the read-only directory of the host-run.sh
+# checks behind.
+[[ -d $WORK ]] && chmod -R u+w "$WORK"
 rm -rf "$WORK"
 mkdir -p "$WORK"
 TREE=$WORK/tree
@@ -180,6 +186,57 @@ for name in offset vmdk fs-image; do
     fi
 done
 note "harness: $(($(wc -l <"$WORK/harness-partition.manifest") - 1)) entries"
+
+# The Host-side run's in-container script (test/vm/host-run.sh). In the real
+# run the image and the directories are read-only Docker mounts; here they are
+# read-only by permission (the devcontainer runs as an ordinary user).
+host_run_selftest() {
+    local ro=$WORK/host-run-ro rw=$WORK/host-run-rw out=$WORK/host-run-out rc
+    if ((EUID == 0)); then
+        note "host-run.sh: skipped as root (permissions don't stop root writing)"
+        return
+    fi
+    rm -rf "$ro" "$rw" "$out"
+    mkdir -p "$ro" "$rw" "$out"
+    cp "$vmdk" "$ro/disk.vmdk"
+    cp "$vmdk" "$rw/disk.vmdk"
+    chmod a-w "$ro/disk.vmdk" "$ro"
+
+    # Everything read-only: same Manifest as the harness on the .vmdk directly.
+    test/vm/host-run.sh "$out/ro.manifest" 1 "$ro/disk.vmdk" "$ro" >"$out/ro.log" 2>&1
+    rc=$?
+    if ((rc != 0)); then
+        fail "host-run.sh on a read-only image exited $rc: $(tail -n1 "$out/ro.log")"
+    elif ! cmp -s "$WORK/harness-vmdk.manifest" "$out/ro.manifest"; then
+        fail "host-run.sh writes a different Manifest than tsk-harness --partition 1 on the same .vmdk"
+    elif ! grep -q "^read-only: $ro/disk.vmdk: " "$out/ro.log" || ! grep -q "^read-only: $ro: " "$out/ro.log"; then
+        fail "host-run.sh doesn't report its read-only probe of the image and the directory: $(head -c 300 "$out/ro.log")"
+    else
+        note "host-run.sh: read-only image and directory accepted, same Manifest as the harness"
+    fi
+
+    # A writable image: refused before the harness runs.
+    test/vm/host-run.sh "$out/rw-image.manifest" 1 "$rw/disk.vmdk" "$ro" >"$out/rw-image.log" 2>&1
+    rc=$?
+    if ((rc != 3)) || [[ -e $out/rw-image.manifest ]] || ! grep -q "^WRITABLE: $rw/disk.vmdk\$" "$out/rw-image.log"; then
+        fail "host-run.sh on a writable image: expected exit 3, a WRITABLE line and no Manifest; got exit $rc: $(head -c 300 "$out/rw-image.log")"
+    else
+        note "host-run.sh: writable image refused"
+    fi
+
+    # A writable directory: refused too, and the probe leaves nothing behind.
+    test/vm/host-run.sh "$out/rw-dir.manifest" 1 "$ro/disk.vmdk" "$ro" "$rw" >"$out/rw-dir.log" 2>&1
+    rc=$?
+    if ((rc != 3)) || [[ -e $out/rw-dir.manifest ]] || ! grep -q "^WRITABLE: $rw\$" "$out/rw-dir.log"; then
+        fail "host-run.sh with a writable directory: expected exit 3, a WRITABLE line and no Manifest; got exit $rc: $(head -c 300 "$out/rw-dir.log")"
+    elif [[ $(find "$rw" -mindepth 1 | wc -l) -ne 1 ]]; then
+        fail "host-run.sh's write probe left files in $rw"
+    else
+        note "host-run.sh: writable directory refused, probe file removed"
+    fi
+    chmod u+w "$ro"
+}
+host_run_selftest
 
 # The harness against Ground truth.
 if "$TOOLS/compare-manifests" --ground-truth "$gt" --run "$WORK/harness-partition.manifest" \
