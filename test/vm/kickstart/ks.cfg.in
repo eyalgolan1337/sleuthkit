@@ -1,0 +1,103 @@
+# Kickstart for the TSK Validation VM: AlmaLinux 9.9 minimal, BIOS, GPT, no LVM.
+#
+# build-vm.sh renders this template into the VM directory, replacing the @...@
+# placeholders with the generated root password hash and SSH public key, and puts the
+# result as ks.cfg on a small ISO labelled OEMDRV. Anaconda loads ks.cfg from a volume
+# with that label without any boot option. Never commit a rendered copy.
+#
+# Disk layout (sda, 20 GiB, GPT):
+#   sda1  biosboot      1 MiB    BIOS boot partition for GRUB
+#   sda2  /boot         1 GiB    XFS, distribution defaults (formatted by Anaconda)
+#   sda3  /            10 GiB    XFS, distribution defaults (formatted by Anaconda)
+#   sda4  /data         4 GiB    XFS v5, mkfs.xfs defaults (reflink, bigtime, sparse inodes)
+#   sda5  /data-compat  2 GiB    XFS v5, reflink/bigtime/inobtcount off, 2 KiB blocks,
+#                                1 KiB inodes
+#   sda6  /control      1 GiB    ext4, mke2fs defaults (the Control file system)
+#   free               ~2 GiB    left unallocated
+# The corpus partitions (sda4-sda6) are mounted noatime. They are formatted in %post
+# with the installed system's own mkfs tools, so "defaults" means AlmaLinux 9.9's.
+#
+# The minimal ISO does not carry open-vm-tools, so the install also uses the AlmaLinux
+# 9.9 BaseOS and AppStream repositories over the network. dnf may then install 9.9
+# updates that are newer than the packages on the ISO.
+
+text
+cdrom
+repo --name=almalinux-9.9-baseos --baseurl=https://repo.almalinux.org/almalinux/9.9/BaseOS/x86_64/os/
+repo --name=almalinux-9.9-appstream --baseurl=https://repo.almalinux.org/almalinux/9.9/AppStream/x86_64/os/
+eula --agreed
+lang en_US.UTF-8
+keyboard --vckeymap=us --xlayouts=us
+timezone Etc/UTC --utc
+network --device=link --bootproto=dhcp --onboot=on --activate --hostname=@VM_HOSTNAME@
+firewall --enabled --service=ssh
+selinux --enforcing
+firstboot --disable
+skipx
+rootpw --iscrypted @ROOTPW_HASH@
+sshkey --username=root "@SSH_PUBKEY@"
+services --enabled=sshd,vmtoolsd
+
+# Partitions are created in %pre so their order and sizes are exact; Anaconda only
+# formats and mounts the system ones.
+ignoredisk --only-use=sda
+bootloader --location=mbr --boot-drive=sda
+part biosboot --fstype=biosboot --onpart=sda1
+part /boot --fstype=xfs --onpart=sda2
+part / --fstype=xfs --onpart=sda3
+
+poweroff
+
+%packages
+@^minimal-environment
+open-vm-tools
+xfsprogs
+e2fsprogs
+tar
+%end
+
+%addon com_redhat_kdump --disable
+%end
+
+%pre --interpreter=/bin/bash --erroronfail --log=/tmp/ks-pre.log
+set -euxo pipefail
+say() { echo "tsk-ks: $*" >/dev/ttyS0 || true; }
+say "pre: partitioning /dev/sda"
+wipefs -a /dev/sda
+parted -s -a optimal /dev/sda -- \
+    mklabel gpt \
+    unit MiB \
+    mkpart biosboot 1 2 \
+    set 1 bios_grub on \
+    mkpart boot 2 1026 \
+    mkpart root 1026 11266 \
+    mkpart data 11266 15362 \
+    mkpart data-compat 15362 17410 \
+    mkpart control 17410 18434
+udevadm settle
+parted -s /dev/sda unit MiB print free >/dev/ttyS0 || true
+say "pre: done"
+%end
+
+%post --interpreter=/bin/bash --erroronfail --log=/root/ks-post.log
+set -euxo pipefail
+say() { echo "tsk-ks: $*" >/dev/ttyS0 || true; }
+say "post: formatting corpus partitions"
+mkfs.xfs -f -L data /dev/sda4
+mkfs.xfs -f -L data-compat -b size=2048 -i size=1024 \
+    -m crc=1,reflink=0,bigtime=0,inobtcount=0 /dev/sda5
+mkfs.ext4 -F -L control /dev/sda6
+
+add_mount() { # device mountpoint fstype passno
+    local uuid
+    uuid=$(blkid -p -s UUID -o value "$1")
+    test -n "$uuid"
+    mkdir -p "$2"
+    printf 'UUID=%s %s %s defaults,noatime 0 %s\n' "$uuid" "$2" "$3" "$4" >>/etc/fstab
+}
+add_mount /dev/sda4 /data xfs 0
+add_mount /dev/sda5 /data-compat xfs 0
+add_mount /dev/sda6 /control ext4 2
+cat /etc/fstab >/dev/ttyS0 || true
+say "post: done"
+%end
