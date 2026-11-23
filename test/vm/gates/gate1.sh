@@ -1,7 +1,7 @@
 # shellcheck shell=bash
 # Gate 1: devcontainer build, C++17/C++20 syntax check of changed C++ files,
-# and the comparison step's self-test. A later ticket adds the static guest
-# build here.
+# and the self-tests of the comparison step, Ground truth capture and the
+# harness. A later ticket adds the static guest build here.
 
 gate1_build() {
     local fresh=$VALIDATE_FRESH compiler
@@ -39,21 +39,14 @@ gate1_cxx_std() {
         --items "$VALIDATE_ITEMS" --jobs "$JOBS" "${incomplete[@]}" -- "${changed[@]}"
 }
 
-# The comparison step's self-test: hand-made Manifests, no Validation VM
-# (test/vm/manifest/selftest.cpp). The build check already built it; make
-# only rebuilds what is out of date, so this check also stands on its own.
-gate1_manifest_selftest() {
-    local selftest=build/vm-tools/manifest-selftest out rc=0 name
-    if ! make -j"$JOBS" -f test/vm/manifest/manifest.mk all; then
-        item_fail "could not build the comparison step and its self-test; see the log"
-        return 1
-    fi
+# Runs a CppUnit self-test binary and reports each failed case.
+run_cppunit_selftest() {
+    local selftest=$1 out rc=0 name n
     out=$("$selftest" 2>&1) || rc=$?
     printf '%s\n' "$out"
     if ((rc == 0)); then
-        local n
         n=$(sed -nE 's/^OK \(([0-9]+)\)$/\1/p' <<<"$out")
-        item_note "${n:-all} self-test cases passed"
+        item_note "$(basename "$selftest"): ${n:-all} cases passed"
         return 0
     fi
     while IFS= read -r name; do
@@ -63,11 +56,37 @@ gate1_manifest_selftest() {
     return 1
 }
 
+# The comparison step's self-test: hand-made Manifests, no Validation VM
+# (test/vm/manifest/selftest.cpp), plus the SHA-256 and Ground truth capture
+# cases linked into the same binary. The build check already built it; make
+# only rebuilds what is out of date, so this check also stands on its own.
+gate1_manifest_selftest() {
+    if ! make -j"$JOBS" -f test/vm/manifest/manifest.mk all; then
+        item_fail "could not build the validation setup's C++ tools; see the log"
+        return 1
+    fi
+    run_cppunit_selftest build/vm-tools/manifest-selftest
+}
+
+# The harness: its CppUnit self-test, then the end-to-end check on an ext4
+# image (test/vm/harness/selftest.sh, which reports its own items).
+gate1_harness_selftest() {
+    local rc=0
+    if ! make -j"$JOBS" -f test/vm/manifest/manifest.mk all; then
+        item_fail "could not build the harness; see the log"
+        return 1
+    fi
+    run_cppunit_selftest build/vm-tools/harness-selftest || rc=1
+    test/vm/harness/selftest.sh || rc=1
+    return "$rc"
+}
+
 gate_1() {
-    gate_begin 1 "Build, C++17/C++20 syntax and comparison self-test"
+    gate_begin 1 "Build, C++17/C++20 syntax and self-tests"
     run_check build "Build (configure if needed, make, check programs, compile_commands.json)" gate1_build
     run_check cxx17 "C++17 syntax-only compile of changed C++ files" gate1_cxx_std c++17
     run_check cxx20 "C++20 syntax-only compile of changed C++ files" gate1_cxx_std c++20
-    run_check manifest-selftest "Comparison step self-test (hand-made Manifests)" gate1_manifest_selftest
+    run_check manifest-selftest "Comparison step and Ground truth capture self-test" gate1_manifest_selftest
+    run_check harness-selftest "Harness self-test (ext4 image: raw, offset, .vmdk, Ground truth)" gate1_harness_selftest
     gate_end
 }

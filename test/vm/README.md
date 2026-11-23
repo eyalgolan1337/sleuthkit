@@ -32,7 +32,7 @@ A full run builds everything from clean and runs `make check`. It takes a few mi
 
 | Gate | What it checks | Status |
 |------|----------------|--------|
-| 1 | Clean build of the library, tools, samples, test programs and the validation setup's C++ tools under `bear` (`.devcontainer/build-compile-db.sh`), which also regenerates `compile_commands.json`. Then a syntax-only compile of each changed C++ file as C++17 and as C++20, and the [comparison step's self-test](#gate-1-comparison-step-self-test). | Implemented |
+| 1 | Clean build of the library, tools, samples, test programs and the validation setup's C++ tools under `bear` (`.devcontainer/build-compile-db.sh`), which also regenerates `compile_commands.json`. Then a syntax-only compile of each changed C++ file as C++17 and as C++20, the [comparison step's self-test](#gate-1-comparison-step-self-test) and the [harness self-test](#gate-1-harness-self-test). | Implemented |
 | 2 | The full `make check`. | Implemented |
 | 3 | **Strict checks** | Not yet implemented (#17, #18) |
 | 4 | **Best-effort checks** | Not yet implemented (#21) |
@@ -51,7 +51,11 @@ A changed header is checked through every compiled C++ source that includes it, 
 
 ### Gate 1: comparison step self-test
 
-`build/vm-tools/manifest-selftest` checks the Manifest reader and writer and the comparison step on hand-made Manifests. It needs no Validation VM. Each failed case is a failure of gate 1, named in the report. See [The self-test](#the-self-test).
+`build/vm-tools/manifest-selftest` checks the Manifest reader and writer and the comparison step on hand-made Manifests, the SHA-256 code, and Ground truth capture on a temporary directory tree. It needs no Validation VM. Each failed case is a failure of gate 1, named in the report. See [The self-test](#the-self-test).
+
+### Gate 1: harness self-test
+
+`build/vm-tools/harness-selftest` (CppUnit) checks the harness's command line, its mapping from libtsk metadata to Manifest entries, its `!error` Manifests, and its walk over a small ext4 image made with `mkfs.ext4 -d`: entries and their order, content hashes, hard links, symlinks, and the partition found through a GPT volume system, by offset or missing. Then `test/vm/harness/selftest.sh` checks the harness and Ground truth capture end to end on an ext4 image. See [Harness self-test](#harness-self-test).
 
 ### Gate 5: format and lint
 
@@ -80,7 +84,7 @@ Later parts of the setup add checks to the gate files in `test/vm/gates/` (`gate
 
 ```sh
 gate_1() {
-    gate_begin 1 "Build, C++17/C++20 syntax and comparison self-test"
+    gate_begin 1 "Build, C++17/C++20 syntax and self-tests"
     run_check build "Build (...)" gate1_build   # run_check <slug> <title> <command> [args...]
     ...
     gate_end
@@ -98,14 +102,16 @@ The code is C++14 and has no dependency on libtsk or any other language runtime.
 | File | Contents |
 | --- | --- |
 | `manifest.h`, `manifest.cpp` | The Manifest format: `Entry`, `Manifest`, path encoding, `ManifestWriter`, `read_manifest`. The harness and Ground truth capture use this API to write Manifests. |
+| `sha256.h`, `sha256.cpp` | SHA-256 for file content, shared by the harness and Ground truth capture |
 | `compare.h`, `compare.cpp` | The comparison step: `compare_manifests`, the Known failure and Volatile path list readers, the report |
 | `compare_cli.h`, `compare_cli.cpp`, `compare_main.cpp` | The `compare-manifests` command |
-| `selftest.cpp` | The self-test (CppUnit), run in gate 1 |
-| `manifest.mk` | Plain GNU make file that builds all of it into `build/vm-tools/` |
+| `selftest.cpp`, `sha256_selftest.cpp` | The self-test (CppUnit), run in gate 1 |
+| `manifest.mk` | Plain GNU make file that builds all of it, and the [harness and Ground truth capture](#the-harness-and-ground-truth-capture), into `build/vm-tools/` |
 
 ```sh
-make -f test/vm/manifest/manifest.mk          # libtskmanifest.a, compare-manifests, manifest-selftest
-make -f test/vm/manifest/manifest.mk check    # ... and run the self-test
+make -f test/vm/manifest/manifest.mk          # libtskmanifest.a, compare-manifests, capture-ground-truth,
+                                              # tsk-harness and the self-tests (build the library first)
+make -f test/vm/manifest/manifest.mk check    # ... and run the self-tests
 ```
 
 Run these in the devcontainer, from the repository root. `.devcontainer/build-compile-db.sh` (and so gate 1) builds the same targets under `bear`, so the files have entries in `compile_commands.json`.
@@ -229,7 +235,102 @@ A text file with one encoded path per line, relative to the file system root. Bl
 - Known failures: a listed difference is tolerated; a listed one that now passes fails; lines for other checks or partitions are ignored; `*` subjects; whole-run errors ("file system not recognised") tolerated, stale or with another code; list parsing;
 - the `compare-manifests` command: exit statuses, report, items and their cap, and usage and input errors.
 
+The same binary, `manifest-selftest`, also links `sha256_selftest.cpp` and `../capture/capture_selftest.cpp`:
+
+- SHA-256: the FIPS 180-4 examples, lengths around the padding boundaries, all byte values, and the same data fed in pieces of different sizes;
+- Ground truth capture, on a tree built in a temporary directory: each entry type, hard links, symlinks that are recorded but not followed (including 300-byte and non-UTF-8 targets), odd names, nanosecond and pre-1970 timestamps, permission bits, crtime when `statx` reports a birth time, walk order, an unreadable file, a missing root, a round trip of the whole tree through the writer and reader, and the command's exit statuses.
+
 Gate 1 runs it. A failing case fails gate 1 and is named in the report.
+
+## The harness and Ground truth capture
+
+Two programs write Manifests, both through `ManifestWriter`, and both hash file content with the same SHA-256 code (`test/vm/manifest/sha256.h`):
+
+- **Ground truth capture** (`capture-ground-truth`) records a mounted directory tree as the kernel shows it. It runs in the Validation VM's guest.
+- The **harness** (`tsk-harness`) records the file system in a disk image as libtsk reads it, through the public API only.
+
+Neither is installed with the library. Both are C++14 and are built by `test/vm/manifest/manifest.mk` into `build/vm-tools/` (gate 1 builds them under `bear`).
+
+| File | Contents |
+| --- | --- |
+| `capture/capture.h`, `capture.cpp`, `capture_main.cpp` | Ground truth capture: `capture_tree`, the `capture-ground-truth` command |
+| `capture/capture_selftest.cpp` | Its CppUnit cases, linked into `manifest-selftest` |
+| `harness/harness.h`, `harness.cpp`, `harness_main.cpp` | The harness: `parse_harness_args`, `entry_from_meta`, `run_harness`, the `tsk-harness` command |
+| `harness/harness_selftest.cpp` | Its CppUnit cases (`harness-selftest`) |
+| `harness/selftest.sh`, `harness/expected-differences.txt` | The [end-to-end self-test](#harness-self-test) on an ext4 image |
+
+### Ground truth capture
+
+```sh
+build/vm-tools/capture-ground-truth [-o FILE] DIR
+```
+
+Writes one entry per path under `DIR`, `DIR` itself as `/`. Within each directory the names are sorted bytewise, and a directory comes before its contents. For each entry it uses `statx` without following symlinks: type, inode, permission bits, uid, gid, size, link count, and mtime, ctime and atime with nanoseconds. crtime is recorded when `statx` reports a birth time (`STATX_BTIME`), and is `-` otherwise. A regular file's content is read and hashed, opened with `O_NOATIME` where the kernel allows it (the file's owner, or root). A symlink's target is read with `readlinkat`.
+
+- Symlinks are recorded, never followed.
+- It stays on `DIR`'s file system. A directory on another device (a mount point) is recorded as `statx` sees it, which is the root of the file system mounted there, but its contents are not. To record what a mount hides, capture a bind mount of the file system instead.
+- An entry it can't record fully is reported on standard error. A file that can't be read is recorded without its SHA-256, and an entry that vanished between listing and `statx` is left out.
+- Exit status: `0` complete; `1` Manifest written but incomplete (see standard error); `2` bad usage, `DIR` unreadable or the output couldn't be written.
+
+It uses only the C++ standard library and glibc, so it links fully statically for the guest, whose glibc is older than the devcontainer's: `make -f test/vm/manifest/manifest.mk capture-static` writes `build/vm-tools/static/capture-ground-truth`. The harness self-test links it this way and checks that it writes the same Manifest.
+
+### The harness
+
+```sh
+build/vm-tools/tsk-harness [--partition N | --offset BYTES] [-o FILE] IMAGE...
+```
+
+Opens the image read-only with `tsk_img_open_utf8` (raw, `.vmdk` or any other format libtsk detects; several `IMAGE` arguments are the segments of one split image) and finds the file system:
+
+- `--partition N`: the volume system is opened (`tsk_vs_open`) and the Nth allocated partition, counting from 1 in volume-system order, is opened with `tsk_fs_open_vol`. For a GPT disk whose entries have no gaps, such as the Validation VM's, partition `N` is `/dev/sdaN`. Standard error says at which byte the partition starts.
+- `--offset BYTES`: the file system starts at that byte offset (`tsk_fs_open_img`).
+- Neither: the image is the file system (offset 0), for example a `/dev/sdaN` device in a **Guest-side run**.
+
+The file system type is always autodetected (`TSK_FS_TYPE_DETECT`). The harness then walks from the root directory with `tsk_fs_dir_open_meta`, `tsk_fs_dir_get_name` and `tsk_fs_dir_get`, writing one entry per allocated name in the same order as Ground truth capture. It skips `.`, `..` and libtsk's virtual entries (`$OrphanFiles` and other `TSK_FS_NAME_TYPE_VIRT*` names). It reads every regular file with `tsk_fs_file_read` and computes the SHA-256 itself; libtsk has no new hashing API. A directory that is one of its own ancestors isn't walked again.
+
+Fields come from `TSK_FS_META`: `addr`, `type`, `mode & 07777`, `uid`, `gid`, `size`, `nlink`, `link` (symlink target), and each time with its `*_nano` part. libtsk reports a missing crtime as 0, so a crtime of exactly 0 is written as `-`.
+
+If the image, volume system, partition, file system or root directory can't be opened, the Manifest is a single `!error` line (see [Failed runs](#failed-runs)) with one of these codes, and the detail is libtsk's error message:
+
+| Code | Meaning |
+| --- | --- |
+| `img-open` | The image couldn't be opened |
+| `vs-open` | `--partition` was given, but no volume system was found |
+| `partition` | The volume system has fewer than N allocated partitions |
+| `fs-open` | No file system was recognised: for example, an XFS partition before XFS support |
+| `root` | The root directory's metadata couldn't be read |
+
+An entry the harness can't record fully is reported on standard error: without metadata it is left out, and a file it can't read is recorded without its SHA-256. Exit status: `0` complete; `1` the Manifest has `!error`, or entries were left out or have no SHA-256; `2` bad usage, or the output couldn't be written.
+
+**Public API only.** The harness includes nothing but `<tsk/libtsk.h>`, and it is compiled against a staged install of the library: `manifest.mk` runs `make install-nobase_includeHEADERS` and `make -C tsk install-libLTLIBRARIES install-nodist_pkgconfigDATA` with `DESTDIR=build/vm-tools/tsk-stage`. The staged include directory, passed with `-isystem`, is the harness's only libtsk include directory, so a header that isn't installed can't be found. It links the staged `libtsk.so`, with an rpath to it. The [harness self-test](#harness-self-test) checks the result: every libtsk header listed in the harness objects' dependency files (compiled with `-MD`, which also lists system headers) must come from the staged install, and none from `tsk/`.
+
+File system autodetection needs the library built with `-fno-strict-aliasing` under GCC 16.1 (`docs/llm/build-and-test.md`, "Known defects and traps", item 19). `.devcontainer/build-compile-db.sh` configures it that way.
+
+### Harness self-test
+
+`test/vm/harness/selftest.sh` checks the harness and Ground truth capture end to end, in the devcontainer, without a Validation VM. Gate 1 runs it after `harness-selftest`, and it writes its findings to the report. Its files are in `build/harness-selftest/`. It needs `mkfs.ext4`, `sfdisk` and `qemu-img`, which come with the devcontainer image.
+
+1. **Test tree.** It builds a directory tree with nested directories, an empty directory, a 300 000-byte file, an empty file, a file with three hard links, short (inline) and long (block) symlinks, relative and dangling symlinks, a FIFO and a socket. It also has names with a space, a tab, a newline, a Latin-1 byte (0xE9), UTF-8, `-`, `%` and 255 bytes, plus setuid, sticky and restrictive permission bits. `mkfs.ext4 -d` (e2fsprogs 1.47) stores whole seconds only and clamps times after 2038, so every entry gets a whole-second mtime it can store, including one before 1970 and 2147483647, the last second of 32-bit time. Nanoseconds and times after 2038 are left to the Validation VM, whose file systems the kernel writes.
+2. **Ground truth** of that tree with `capture-ground-truth`, read back by `compare-manifests` (Strict, against itself). The statically linked build must be static and must write the same Manifest (Strict comparison; a byte-for-byte check would trip over the directory atimes that the first capture's `readdir` updated).
+3. **Images.** `mkfs.ext4 -I 256 -E root_owner=UID:GID -d TREE` builds a 16 MiB ext4 file system (1 KiB blocks, extents). `sfdisk` makes a GPT disk image with one partition at 1 MiB, and the file system is copied into it. `qemu-img convert -O vmdk` turns the disk into a single-file `monolithicSparse` `.vmdk`, the type the Validation VM uses.
+4. **One Manifest, four ways.** The harness reads the raw disk with `--partition 1` (volume system) and with `--offset 1048576`, the `.vmdk` with `--partition 1`, and the bare file system image. All four Manifests must be byte for byte identical.
+5. **Harness against Ground truth.** `compare-manifests --mode strict` with `harness/expected-differences.txt` as its Known failure list (check `harness-selftest`, partition `ext4`). Every other difference fails, and so does a listed difference that no longer occurs.
+6. **Installed headers only**, as described under [The harness](#the-harness).
+
+How the harness was checked against what went into the image (step 5, run on 2026-11-23 with e2fsprogs 1.47.2): Ground truth has 26 entries and the harness 27. Every path, type, mode, uid, gid, file size, link count, symlink target and SHA-256 matches, apart from these expected differences (89 in all):
+
+| Difference | Entries | Why |
+| --- | --- | --- |
+| inode | all | `mkfs.ext4 -d` allocates new inode numbers. |
+| ctime, crtime | all | `mkfs.ext4 -d` sets both to the time it ran. The source's ctime can't be set, and its crtime belongs to its own file system. |
+| mtime | `/` | `mkfs.ext4 -d` doesn't copy the root directory's mtime. |
+| nlink | `/` | `/lost+found` adds a subdirectory to the root. |
+| extra | `/lost+found` | Made by `mkfs.ext4`. |
+| size | each directory | A directory's size depends on the file system: 1 KiB ext4 blocks against the source file system's. |
+| mtime | `/empty` | **libtsk defect:** it reads ext4's 32-bit timestamps as unsigned, so −1500000000 (1922) comes back as 2794967296 (2058). By the ext4 on-disk format, the 32-bit value is signed when the extra epoch bits are 0. |
+| target | `/long-symlink` | **libtsk defect:** `ext2fs_dinode_copy` reads a slow symlink's target (60 bytes or more) only for block-mapped inodes. ext4 maps it with extents, so `meta->link` is NULL and the harness writes `-`. |
+
+Without `-fno-strict-aliasing` (above), every run of step 4 crashes in `tsk_fs_open_img`.
 
 ## Validation VM
 
