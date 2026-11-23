@@ -5,6 +5,16 @@
 
 gate1_build() {
     local fresh=$VALIDATE_FRESH compiler
+    # On the host, test/vm/host-build.sh already built this tree for the
+    # Host-side runs, configuring it afresh with --fresh or when it was
+    # configured by another compiler. Report that here; don't do it twice.
+    local hb_log=$RUN_DIR/logs/vm-host-build.log
+    if [[ -n ${TSK_VALIDATE_VM_COLLECTED:-} && $(cat "$RUN_DIR/logs/vm-host-build.status" 2>/dev/null) == 0 ]]; then
+        fresh=
+        if grep -q '^== the tree was configured by another compiler' "$hb_log"; then
+            item_warn "the build tree was configured with another compiler; test/vm/host-build.sh ran make distclean and configured it again (logs/vm-host-build.log)"
+        fi
+    fi
     # A tree configured by another compiler (the host's) must not be mixed
     # with a container build: start it over, as post-create.sh does.
     if [[ -f config.status ]]; then

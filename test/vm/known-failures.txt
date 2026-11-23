@@ -4,10 +4,13 @@
 # saying why it is expected and which issue removes it. A line that no longer
 # matches a difference fails its gate: remove it once the problem is fixed.
 #
-# Checks: strict-guest (gate 3, Guest-side run of the Strict check).
+# Checks: strict-guest and strict-host (gate 3, the Guest-side run and the
+# Host-side run of the Strict check).
 # Partitions: the guest's device names (sda4 /data, sda5 /data-compat,
 # sda6 /control, the Control file system).
 
 # check        partition  subject  difference     comment
 strict-guest   sda4       *        error:fs-open  /data is XFS: file system not recognised (no XFS support yet, #11)
 strict-guest   sda5       *        error:fs-open  /data-compat is XFS: file system not recognised (no XFS support yet, #11)
+strict-host    sda4       *        error:fs-open  /data is XFS: file system not recognised (no XFS support yet, #11)
+strict-host    sda5       *        error:fs-open  /data-compat is XFS: file system not recognised (no XFS support yet, #11)

@@ -9,9 +9,18 @@
 # It starts the Validation VM if it isn't running, copies the static guest
 # build to it, and for each Strict check partition runs the Strict check
 # sequence: sync and freeze, capture Ground truth, flush the block-device cache
-# and drop page caches, the Guest-side run on /dev/sdN, unfreeze. Results go to
-# RUN_DIR/vm/ for gate 3, which compares them in the devcontainer. Then it
-# stops the VM, unless --keep-running is given.
+# and drop page caches, the Guest-side run on /dev/sdN, the Host-side run on
+# the .vmdk, unfreeze. Results go to RUN_DIR/vm/ for gate 3, which compares
+# them in the devcontainer. Then it stops the VM, unless --keep-running is
+# given.
+#
+# The Host-side run uses the harness of the normal devcontainer build
+# (build/vm-tools/tsk-harness; test/vm/host-build.sh builds it) in a one-off
+# container of the devcontainer image (TSK_VALIDATE_IMAGE, or the image of the
+# running devcontainer of the folder TSK_VALIDATE_WORKSPACE, default this
+# checkout; validate.sh passes it), with the repository and the VM
+# directory mounted read-only and only the partition's result directory
+# writable. test/vm/host-run.sh runs in it.
 #
 # The file system is unfrozen on every exit path: after each sequence, from an
 # EXIT trap on failures, timeouts and interrupts, and, if the host can't reach
@@ -23,9 +32,10 @@
 # Test-only hooks (environment):
 #   TSK_VALIDATE_BREAK=PART:PATH   after Ground truth, flip one byte of the file
 #                                  PATH on PART's device, and put it back after
-#                                  the Guest-side run (e.g. sda6:/corpus/hello.txt)
+#                                  the Host-side run (e.g. sda6:/corpus/hello.txt)
 #   TSK_VALIDATE_FROZEN_PAUSE=N    wait N seconds in each frozen window
-# Limits (seconds): TSK_VALIDATE_STEP_TIMEOUT (600) per guest step,
+# Limits (seconds): TSK_VALIDATE_STEP_TIMEOUT (600) per guest step and per
+# Host-side run,
 # TSK_VALIDATE_FREEZE_LIMIT (1800) after which the guest unfreezes by itself.
 set -uo pipefail
 
@@ -49,6 +59,8 @@ PAUSE=${TSK_VALIDATE_FROZEN_PAUSE:-}
 
 rm -rf "$OUT"
 mkdir -p "$OUT"
+# Absolute: the one-off container mounts the result directories by path.
+OUT=$(cd "$OUT" && pwd)
 # status: one line, "ok" or "failed<TAB>reason"; vm.txt: what happened to the VM.
 status() { printf '%s\n' "$*" >"$OUT/status"; }
 vmnote() { printf '%s\n' "$*" >>"$OUT/vm.txt"; }
@@ -57,6 +69,7 @@ status $'failed\tthe collection did not finish'
 
 FROZEN_MNT=     # the mount point frozen right now, if any
 BROKEN=         # the break hook flipped a byte that isn't back yet
+HOST_CONTAINER= # the one-off container of a Host-side run, while it runs
 
 GUEST_IP=
 SSH_OPTS=()
@@ -81,6 +94,10 @@ cleanup() {
     # A second Ctrl-C must not cut the unfreeze short. ssh inherits the
     # ignored signals; each call is still bounded by its timeout.
     trap '' INT TERM
+    if [[ -n $HOST_CONTAINER ]]; then
+        log "removing the one-off container $HOST_CONTAINER"
+        docker rm -f "$HOST_CONTAINER" >/dev/null 2>&1
+    fi
     if [[ -n $BROKEN ]]; then
         log "putting back the byte the break hook changed"
         run_guest_step 120 restore || log "error: could not put back the byte; the next run recreates the corpus"
@@ -132,7 +149,66 @@ tar -C "$REPO/build/guest-static" -c bin -C "$HERE/guest" tsk-validate.sh |
 run_guest_step "$STEP_TIMEOUT" tools >"$OUT/tools.txt" 2>&1 ||
     fail_collect "the static guest tools don't run in the guest: $(grep -m1 FAIL "$OUT/tools.txt")"
 
-# --- Strict checks, Guest side. ---
+# --- The Host-side run's one-off container. ---
+HOST_HARNESS=$REPO/build/vm-tools/tsk-harness
+HOST_IMAGE=${TSK_VALIDATE_IMAGE:-}
+HOST_ERR= # why Host-side runs can't happen, if they can't
+if ! command -v docker >/dev/null; then
+    HOST_ERR="docker is not installed on the host"
+elif [[ ! -x $HOST_HARNESS ]]; then
+    HOST_ERR="the devcontainer build has no build/vm-tools/tsk-harness (test/vm/host-build.sh failed; see logs/vm-host-build.log)"
+elif [[ ! -f $TSK_VM_VMDK ]]; then
+    HOST_ERR="no .vmdk at $TSK_VM_VMDK"
+else
+    if [[ -z $HOST_IMAGE ]]; then
+        workspace=${TSK_VALIDATE_WORKSPACE:-$REPO}
+        HOST_IMAGE=$(docker ps --filter "label=devcontainer.local_folder=$workspace" --format '{{.Image}}' | head -n1)
+    fi
+    if [[ -z $HOST_IMAGE ]]; then
+        HOST_ERR="no devcontainer image: no running devcontainer for $workspace, and TSK_VALIDATE_IMAGE is not set"
+    elif ! docker image inspect "$HOST_IMAGE" >/dev/null 2>&1; then
+        HOST_ERR="the devcontainer image $HOST_IMAGE does not exist"
+    fi
+fi
+if [[ -n $HOST_ERR ]]; then
+    log "error: no Host-side runs: $HOST_ERR"
+    printf 'no Host-side runs: %s\n' "$HOST_ERR" >"$OUT/host.txt"
+else
+    printf 'one-off containers of the devcontainer image %s, reading %s\n' "$HOST_IMAGE" "$TSK_VM_VMDK" >"$OUT/host.txt"
+fi
+
+# host_run <partition>: the Host-side run of the partition's Strict check, in
+# a one-off container. The guest's sdaN is the Nth partition of the .vmdk.
+# Results in strict-host/<partition>/, like a guest step's.
+host_run() {
+    local part=$1 dir=$OUT/strict-host/$1 rc start
+    mkdir -p "$dir"
+    : >"$dir/steps.tsv"
+    start=$SECONDS
+    if [[ -n $HOST_ERR ]]; then
+        echo "$HOST_ERR" >"$dir/host-run.log"
+        rc=125
+    else
+        log "Strict check, Host side: $TSK_VM_VMDK, partition ${part#sda}"
+        HOST_CONTAINER=tsk-validate-host-$$-$part
+        timeout --foreground "$STEP_TIMEOUT" docker run --rm --init --name "$HOST_CONTAINER" \
+            --network none --user "$(id -u):$(id -g)" --workdir "$REPO" \
+            --mount "type=bind,source=$REPO,target=$REPO,readonly" \
+            --mount "type=bind,source=$TSK_VM_DIR,target=$TSK_VM_DIR,readonly" \
+            --mount "type=bind,source=$dir,target=$dir" \
+            "$HOST_IMAGE" "$REPO/test/vm/host-run.sh" "$dir/host.manifest" "${part#sda}" \
+            "$TSK_VM_VMDK" "$TSK_VM_DIR" "$REPO" >"$dir/host-run.log" 2>&1
+        rc=$?
+        if ((rc == 124)); then
+            echo "timed out after ${STEP_TIMEOUT}s" >>"$dir/host-run.log"
+            docker rm -f "$HOST_CONTAINER" >/dev/null 2>&1
+        fi
+        HOST_CONTAINER=
+    fi
+    printf '%s\t%s\t%s\n' host-run "$rc" $((SECONDS - start)) >>"$dir/steps.tsv"
+}
+
+# --- Strict checks. ---
 # step <part-dir> <tsk-validate.sh command> [args...]: runs one step, its
 # output in <command>.log, its exit status appended to steps.tsv. Returns the
 # exit status.
@@ -151,12 +227,15 @@ fetch() { # fetch <guest-file> <host-file>
     gssh "$STEP_TIMEOUT" cat "$1" >"$2"
 }
 
-strict_guest() {
+# strict_check <partition> <mount point>: the Strict check sequence. The
+# guest's steps go to strict-guest/<partition>/, the Host-side run's to
+# strict-host/<partition>/.
+strict_check() {
     local part=$1 mnt=$2 dev=/dev/$1 dir=$OUT/strict-guest/$1 gout=$GUEST_DIR/out/$1
     local break_path= rc
     mkdir -p "$dir"
     : >"$dir/steps.tsv"
-    log "Strict check, Guest side: $mnt ($part)"
+    log "Strict check: $mnt ($part)"
     [[ $BREAK == "$part":* ]] && break_path=${BREAK#*:}
 
     step "$dir" check-mount "$dev" "$mnt" || return 0
@@ -183,6 +262,7 @@ strict_guest() {
         if step "$dir" flush "$dev"; then
             step "$dir" run "$dev" "$gout/guest.manifest"
         fi
+        host_run "$part"
         if [[ -n $PAUSE ]]; then
             log "test hook: waiting ${PAUSE}s with $mnt frozen"
             sleep "$PAUSE"
@@ -204,7 +284,7 @@ strict_guest() {
 
 for entry in "${STRICT_PARTITIONS[@]}"; do
     read -r part mnt <<<"$entry"
-    strict_guest "$part" "$mnt"
+    strict_check "$part" "$mnt"
 done
 
 status ok

@@ -6,7 +6,7 @@ Its entry point is the **validate command**, `test/vm/validate.sh`. It gives one
 
 ## Prerequisites
 
-- Docker (29 or newer works) and the devcontainer image in `.devcontainer/`. Everything is built and checked there, with GCC 16.1 as the only reference toolchain (see `CLAUDE.md`, "Development environment").
+- Docker (29 or newer works) and the devcontainer image in `.devcontainer/`, usable by the host user without `sudo`: the Host-side runs of gate 3 start one-off containers of that image. Everything is built and checked there, with GCC 16.1 as the only reference toolchain (see `CLAUDE.md`, "Development environment").
 - On the host, the devcontainers CLI 0.91.0 or newer (`devcontainer`). If it isn't installed, the command uses `npx @devcontainers/cli@0.91.0`, so Node.js with `npx` is enough. Older CLI versions hang on Docker 29+.
 - Network access on the first run: `make check` downloads its test images to `tests/data/` (`tests/test_libraries.sh`).
 
@@ -37,7 +37,7 @@ Run it on the host. Inside the devcontainer the command still runs every gate, b
 |------|----------------|--------|
 | 1 | Clean build of the library, tools, samples, test programs and the validation setup's C++ tools under `bear` (`.devcontainer/build-compile-db.sh`), which also regenerates `compile_commands.json`. The [static guest build](#the-static-guest-build). Then a syntax-only compile of each changed C++ file as C++17 and as C++20, the [comparison step's self-test](#gate-1-comparison-step-self-test) and the [harness self-test](#gate-1-harness-self-test). | Implemented |
 | 2 | The full `make check`. | Implemented |
-| 3 | **Strict checks** of `/data`, `/data-compat` and the **Control file system** on the Validation VM: [Gate 3: Strict checks](#gate-3-strict-checks). | Guest side implemented; Host side not yet (#18) |
+| 3 | **Strict checks** of `/data`, `/data-compat` and the **Control file system** on the Validation VM: [Gate 3: Strict checks](#gate-3-strict-checks). | Implemented |
 | 4 | **Best-effort checks** | Not yet implemented (#21) |
 | 5 | `clang-format` and `clang-tidy` on changed lines only. | Implemented |
 
@@ -58,16 +58,21 @@ A changed header is checked through every compiled C++ source that includes it, 
 
 ### Gate 1: harness self-test
 
-`build/vm-tools/harness-selftest` (CppUnit) checks the harness's command line, its mapping from libtsk metadata to Manifest entries, its `!error` Manifests, and its walk over a small ext4 image made with `mkfs.ext4 -d`: entries and their order, content hashes, hard links, symlinks, and the partition found through a GPT volume system, by offset or missing. Then `test/vm/harness/selftest.sh` checks the harness and Ground truth capture end to end on an ext4 image. See [Harness self-test](#harness-self-test).
+`build/vm-tools/harness-selftest` (CppUnit) checks the harness's command line, its mapping from libtsk metadata to Manifest entries, its `!error` Manifests, and its walk over a small ext4 image made with `mkfs.ext4 -d`: entries and their order, content hashes, hard links, symlinks, and the partition found through a GPT volume system, by offset or missing. Then `test/vm/harness/selftest.sh` checks the harness and Ground truth capture end to end on an ext4 image, and that `host-run.sh`, the [Host-side run](#gate-3-strict-checks)'s script, refuses a writable image or directory. See [Harness self-test](#harness-self-test).
 
 ### Gate 3: Strict checks
 
-A **Strict check** compares TSK's view of a frozen file system with **Ground truth**, field by field (every Manifest field except atime). Gate 3 runs one per partition: `/data` (`sda4`, XFS), `/data-compat` (`sda5`, XFS) and the Control file system `/control` (`sda6`, ext4). So far only the **Guest-side run** exists: the harness, statically linked, reads the partition's `/dev/sdN` device inside the Validation VM. The **Host-side run** on the `.vmdk` comes with #18. Until XFS support exists, `/data` and `/data-compat` are [Known failures](#known-failure-list) ("file system not recognised"), so in practice the gate shows that the Control file system passes. `/` and `/boot` are in use and can't be frozen; they get Best-effort checks in gate 4 (#21).
+A **Strict check** compares TSK's view of a frozen file system with **Ground truth**, field by field (every Manifest field except atime). Gate 3 runs one per partition: `/data` (`sda4`, XFS), `/data-compat` (`sda5`, XFS) and the Control file system `/control` (`sda6`, ext4). Each Strict check has two runs, compared with the same Ground truth and reported as separate checks:
+
+- the **Guest-side run**: the harness, statically linked, reads the partition's `/dev/sdN` device inside the Validation VM;
+- the **Host-side run**: the harness of the normal devcontainer build reads partition N of the VM's `.vmdk` on the host, while the VM is running and the file system is frozen.
+
+Until XFS support exists, `/data` and `/data-compat` are [Known failures](#known-failure-list) ("file system not recognised"), so in practice the gate shows that the Control file system passes. `/` and `/boot` are in use and can't be frozen; they get Best-effort checks in gate 4 (#21).
 
 **Where it runs.** Only the host can reach the Validation VM, so the work is split:
 
-1. On the host, before the gates, the validate command runs the [static guest build](#the-static-guest-build) in the devcontainer, then `test/vm/collect-vm.sh`. That script starts the VM if it isn't running, copies the static guest build and `guest/tsk-validate.sh` to `/root/tsk-validate/` in the guest, checks that each static tool starts there (no glibc version error), and runs the Strict check sequence below for each partition. Each step is one SSH call. The results go to `build/validate/<run>/vm/`, the log to `logs/vm-collect.log`. Then it stops the VM, unless `--keep-running` was given. It stops it even if it was already running, so the VM doesn't hold memory during `make check`.
-2. In the devcontainer, gate 3 checks each step's exit status and compares the two Manifests with `compare-manifests --mode strict --known-failures test/vm/known-failures.txt --check strict-guest --partition sdaN`.
+1. On the host, before the gates, the validate command runs the [static guest build](#the-static-guest-build) and `test/vm/host-build.sh` (the library and `build/vm-tools/tsk-harness` of the normal build; a full build if the tree isn't configured in the devcontainer yet) in the devcontainer, then `test/vm/collect-vm.sh`. That script starts the VM if it isn't running, copies the static guest build and `guest/tsk-validate.sh` to `/root/tsk-validate/` in the guest, checks that each static tool starts there (no glibc version error), and runs the Strict check sequence below for each partition. Each step is one SSH call. The results go to `build/validate/<run>/vm/`, the log to `logs/vm-collect.log`. Then it stops the VM, unless `--keep-running` was given. It stops it even if it was already running, so the VM doesn't hold memory during `make check`.
+2. In the devcontainer, gate 3 checks each step's exit status and compares each run's Manifest with Ground truth: `compare-manifests --mode strict --known-failures test/vm/known-failures.txt --check strict-guest --partition sdaN` for the Guest-side run, `--check strict-host` for the Host-side run.
 
 **The Strict check sequence**, per partition:
 
@@ -76,7 +81,18 @@ A **Strict check** compares TSK's view of a frozen file system with **Ground tru
 3. Capture Ground truth with `capture-ground-truth` (static), into `/root/tsk-validate/out/` on `/`.
 4. `blockdev --flushbufs /dev/sdaN` and `echo 3 > /proc/sys/vm/drop_caches`, so TSK reads the disk and not stale cache pages (#9).
 5. The Guest-side run: `tsk-harness /dev/sdaN` (static).
-6. `fsfreeze --unfreeze`.
+6. The Host-side run, on the host: `tsk-harness --partition N <vm-dir>/tsk-xfs-alma9.vmdk` in a one-off container (below).
+7. `fsfreeze --unfreeze`.
+
+**The Host-side run's one-off container.** `collect-vm.sh` runs `docker run --rm --init --network none` of the devcontainer's own image (the image of the running devcontainer of this checkout, found by its `devcontainer.local_folder` label), as the host user, with three bind mounts at their host paths:
+
+- the repository, read-only (the harness and its staged `libtsk` are in `build/vm-tools/`);
+- the VM directory (`TSK_VM_DIR`, default `~/vmware/tsk-xfs-alma9`), read-only;
+- the partition's result directory, `build/validate/<run>/vm/strict-host/sdaN/`, the only writable path.
+
+In it, `test/vm/host-run.sh` first checks that the `.vmdk` and both directories are there (a missing mount is an error), then tries to write: it opens the `.vmdk` for appending (which writes nothing) and tries to create a file in the VM directory and in the repository. Each attempt must fail, and the report shows the error, "Read-only file system" for these mounts; if one succeeds, it stops with exit status 3 and the check fails. Then it runs the harness, which opens the image read-only. The guest's `sdaN` is partition N of the `.vmdk`, as `mmls` numbers the allocated partitions. The VM keeps running and writing to the `.vmdk` meanwhile; the frozen partition is the one that can't change. The container is removed when the run ends, also on a timeout (`TSK_VALIDATE_STEP_TIMEOUT`) or an interrupt.
+
+The devcontainer configuration (`.devcontainer/devcontainer.json`) has no VM mount: only these one-off containers see the VM directory, so the devcontainer works the same on a machine without the VM.
 
 **Unfreezing is guaranteed.** The file system is unfrozen after each sequence and on every other exit path: a failed step (including a freeze that half worked), a step that takes longer than `TSK_VALIDATE_STEP_TIMEOUT` seconds (default 600; `timeout` kills its `ssh`), and Ctrl-C or `kill` of the validate command, through `collect-vm.sh`'s `EXIT` trap. If the host can't reach the guest any more (the host side was killed with `SIGKILL`, or the network went away), a transient systemd timer in the guest, armed at each freeze (`tsk-validate-unfreeze-<mount>.timer`), unfreezes it after `TSK_VALIDATE_FREEZE_LIMIT` seconds (default 1800). Checked on 2026-11-23: with the frozen window held open by `TSK_VALIDATE_FROZEN_PAUSE`, `SIGINT` to the validate command's process group (what Ctrl-C sends) in the window of `/control`, and in another run of `/data`, made the command exit 130 with a partial report. A write to the file system succeeded right afterwards, and no unfreeze timer was left. When you try this yourself, don't probe the frozen file system with `timeout N touch ...` first: a write to a frozen file system can't be killed, so `timeout` returns only after the unfreeze.
 
@@ -84,13 +100,15 @@ A **Strict check** compares TSK's view of a frozen file system with **Ground tru
 
 **Test-only hooks** (environment variables of the validate command, passed to `collect-vm.sh`):
 
-- `TSK_VALIDATE_BREAK=PART:PATH`, for example `sda6:/corpus/hello.txt`: after Ground truth is captured, flip one byte of that file's first block directly on `/dev/PART`, and put it back after the Guest-side run (also on failures and interrupts). Gate 3 must then fail and name the entry and the field: `/corpus/hello.txt` and `sha256` (twice: `/corpus/sub/hard-link` is the same file).
+- `TSK_VALIDATE_BREAK=PART:PATH`, for example `sda6:/corpus/hello.txt`: after Ground truth is captured, flip one byte of that file's first block directly on `/dev/PART`, and put it back after the Host-side run (also on failures and interrupts). Both runs read the changed byte, so both the Guest side and the Host side of gate 3 must then fail and name the entry and the field: `/corpus/hello.txt` and `sha256` (twice: `/corpus/sub/hard-link` is the same file).
 - `TSK_VALIDATE_FROZEN_PAUSE=N`: wait N seconds in each frozen window, to interrupt the command there.
+- `TSK_VALIDATE_IMAGE=IMAGE`: run the Host-side runs in one-off containers of IMAGE instead of the running devcontainer's image.
 
-**Reading gate 3 in the report.** The gate has one check for the VM and one per partition:
+**Reading gate 3 in the report.** The gate has one check for the VM and two per partition, Guest side and Host side:
 
-- `Validation VM and the static guest tools`: what happened to the VM (started, already running, stopped, left running) and one note per static tool that started in the guest. It fails if the collection couldn't run, for example no VM, a failed static guest build, or a run inside the devcontainer.
+- `Validation VM and the static guest tools`: what happened to the VM (started, already running, stopped, left running), the image of the Host-side runs' one-off containers (or why there are none), and one note per static tool that started in the guest. It fails if the collection couldn't run, for example no VM, a failed static guest build, or a run inside the devcontainer.
 - `Strict check, Guest side: <mount> (<partition>)`: a failed step of the sequence is a failure naming the step. Then the comparison's findings: each difference is a `failure:` naming the encoded path, the field and both values, then a summary note with the counts, then one `Known failure:` note per tolerated Known failure with its comment from the list. A stale Known failure (listed, but the difference is gone) is a failure. The full per-entry comparison, each step's output and the step timings are in the check's log (`logs/gate3-strict-guest-sdaN.log`). The Manifests are in `vm/strict-guest/sdaN/`.
+- `Strict check, Host side: <mount> (<partition>), .vmdk`: one note per refused write in the one-off container (`write refused, <path>: Read-only file system`), a failure for a writable path or a failed Host-side run (no Docker, no devcontainer image, a failed `host-build.sh`: see `logs/vm-host-build.log`), then the comparison's findings, as for the Guest side, against the same Ground truth. The steps the two runs share (freeze, capture, unfreeze) are reported by the Guest side only. Log: `logs/gate3-strict-host-sdaN.log`; the Manifest: `vm/strict-host/sdaN/host.manifest`.
 
 ### Gate 5: format and lint
 
@@ -248,13 +266,13 @@ strict-host    sda6       /lost+found      crtime          TSK doesn't read ext4
 strict-guest   sda6       *                crtime          the same for every entry
 ```
 
-- `check` and `partition` name the check and the partition the line belongs to (`[A-Za-z0-9._-]+`). The gate that runs the comparison passes the same names with `--check` and `--partition`. No wildcards, so a line always belongs to exactly one comparison. Check names: `strict-guest` (gate 3, Guest-side run); `strict-host` comes with #18. Partition names are the guest's device names: `sda4`, `sda5`, `sda6`.
+- `check` and `partition` name the check and the partition the line belongs to (`[A-Za-z0-9._-]+`). The gate that runs the comparison passes the same names with `--check` and `--partition`. No wildcards, so a line always belongs to exactly one comparison. Check names: `strict-guest` and `strict-host` (gate 3, the Guest-side run and the Host-side run). Partition names are the guest's device names: `sda4`, `sda5`, `sda6`.
 - `subject` is an encoded path, or `*`. With a path, the line covers that entry only. With `*`, it covers that difference on every entry, or the whole run for `error:<code>`. A line naming the path takes precedence over a `*` line. A `*` line stays in use while any entry still has the difference, so a partial fix doesn't make it stale; prefer path lines once only a few entries are affected.
 - `difference` is `missing`, `extra`, one of the 12 compared field names, or `error:<code>`, which needs the subject `*`. `error:<code>` covers a run whose Manifest has `!error` with that code, i.e. a whole-file-system failure such as "file system not recognised".
 - The rest of the line is a free-text comment that is shown in the report. Say why the failure is expected and which issue fixes it.
 - Blank lines and lines starting with `#` are skipped. A duplicate line or an unknown difference is an error (exit status 2).
 
-The committed list is `test/vm/known-failures.txt`. It records `/data` (`sda4`) and `/data-compat` (`sda5`) as `* error:fs-open` for `strict-guest`: no XFS support yet. `/boot` and `/` get their lines with the Best-effort check (#21), the only check that reads them.
+The committed list is `test/vm/known-failures.txt`. It records `/data` (`sda4`) and `/data-compat` (`sda5`) as `* error:fs-open` for `strict-guest` and `strict-host`: no XFS support yet. `/boot` and `/` get their lines with the Best-effort check (#21), the only check that reads them.
 
 ### Volatile path list
 
@@ -351,6 +369,7 @@ File system autodetection needs the library built with `-fno-strict-aliasing` un
 4. **One Manifest, four ways.** The harness reads the raw disk with `--partition 1` (volume system) and with `--offset 1048576`, the `.vmdk` with `--partition 1`, and the bare file system image. All four Manifests must be byte for byte identical.
 5. **Harness against Ground truth.** `compare-manifests --mode strict` with `harness/expected-differences.txt` as its Known failure list (check `harness-selftest`, partition `ext4`). Every other difference fails, and so does a listed difference that no longer occurs.
 6. **Installed headers only**, as described under [The harness](#the-harness).
+7. **`host-run.sh`** (the Host-side run's script, see [Gate 3: Strict checks](#gate-3-strict-checks)). Here, read-only means without write permission, since the devcontainer runs as an ordinary user and has no read-only mounts. With a read-only copy of the `.vmdk` in a read-only directory, it must report both write attempts as refused and write the same Manifest as the harness on the `.vmdk` in step 4. With a writable image, or with a writable directory among the ones to probe, it must exit 3, name the writable path and write no Manifest, and its write probe must leave no file behind. Skipped when run as root.
 
 How the harness was checked against what went into the image (step 5, run on 2026-11-23 with e2fsprogs 1.47.2): Ground truth has 26 entries and the harness 27. Every path, type, mode, uid, gid, file size, link count, symlink target and SHA-256 matches, apart from these expected differences (89 in all):
 
@@ -567,8 +586,10 @@ The Validation VM's disk has no v4 file system. The [XFS fixture images](#xfs-fi
 | `check-xfs-v4.sh` | host | Tests whether the guest kernel mounts XFS v4 |
 | `kickstart/ks.cfg.in` | installer | Kickstart template |
 | `guest/verify-layout.sh` | guest | Layout and file-system checks, sent by `verify-vm.sh` |
-| `collect-vm.sh` | host | Collects the VM's results for gate 3: VM start and stop, the Strict check sequence |
+| `collect-vm.sh` | host | Collects the VM's results for gate 3: VM start and stop, the Strict check sequence, the Host-side runs' one-off containers |
 | `guest/tsk-validate.sh` | guest | One step of the Strict check sequence per call (freeze, capture, flush, run, unfreeze, starter corpus, test hooks), copied by `collect-vm.sh` |
 | `guest-build.sh` | devcontainer | The [static guest build](#the-static-guest-build) |
+| `host-build.sh` | devcontainer | The normal build's library and `tsk-harness`, for the Host-side runs |
+| `host-run.sh` | one-off container | The Host-side run: read-only probe, then the harness on the `.vmdk`; started by `collect-vm.sh` |
 | `lib/vm_checks.sh` | both | The Strict check partitions and mount points, shared by `collect-vm.sh` and gate 3 |
 | `known-failures.txt` | devcontainer | The committed [Known failure list](#known-failure-list) |

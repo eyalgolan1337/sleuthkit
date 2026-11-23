@@ -5,7 +5,8 @@
 #   test/vm/validate.sh [--base REF] [--fresh] [--keep-running]
 #
 # On the host, it first collects the Validation VM's results for gate 3 (the
-# static guest build in the devcontainer, then test/vm/collect-vm.sh), then
+# static guest build and the Host-side run's harness in the devcontainer, then
+# test/vm/collect-vm.sh), then
 # runs every gate in the devcontainer. Every gate runs even if an earlier one
 # fails. The report goes to build/validate/<UTC time>/report.md
 # (build/validate/latest/report.md) and is printed at the end. Exit status: 0 if no gate failed, 1 if a gate failed,
@@ -153,8 +154,10 @@ $WINDOWS_NOTE" \
 
 # On the host, before the gates: the Validation VM is reachable only from
 # here (vmrun, its SSH key), so its results are collected now and gate 3
-# compares them in the devcontainer. The static guest build runs in the
-# devcontainer first. Failures here don't stop the command: gate 3 reports them.
+# compares them in the devcontainer. The static guest build (Guest-side runs)
+# and the normal build's harness (Host-side runs, in one-off containers of the
+# devcontainer's image) are built in the devcontainer first. Failures here
+# don't stop the command: gate 3 reports them.
 host_collect_vm() {
     make_run_dir
     trap host_interrupted INT TERM
@@ -164,8 +167,16 @@ host_collect_vm() {
     echo "Building the static guest tools in the devcontainer (log: build/validate/$RUN_NAME/logs/vm-guest-build.log)" >&2
     devcontainer_cli exec --workspace-folder "$WORKSPACE" \
         "$REPO/test/vm/guest-build.sh" "${fresh[@]}" >"$RUN_DIR/logs/vm-guest-build.log" 2>&1
+    echo "Building the Host-side run's harness in the devcontainer (log: build/validate/$RUN_NAME/logs/vm-host-build.log)" >&2
+    devcontainer_cli exec --workspace-folder "$WORKSPACE" \
+        "$REPO/test/vm/host-build.sh" "${fresh[@]}" >"$RUN_DIR/logs/vm-host-build.log" 2>&1
+    # Gate 1 reads it: after a successful host-build.sh the tree is configured.
+    echo $? >"$RUN_DIR/logs/vm-host-build.status"
     echo "Collecting the Validation VM's results for gate 3 (log: build/validate/$RUN_NAME/logs/vm-collect.log)" >&2
-    "$VALIDATE_DIR/collect-vm.sh" "$RUN_DIR" "${keep[@]}" >"$RUN_DIR/logs/vm-collect.log" 2>&1
+    # The one-off containers of the Host-side runs use the image of this
+    # devcontainer (in a git worktree, the main checkout's).
+    TSK_VALIDATE_WORKSPACE=$WORKSPACE "$VALIDATE_DIR/collect-vm.sh" "$RUN_DIR" "${keep[@]}" \
+        >"$RUN_DIR/logs/vm-collect.log" 2>&1
     rc=$?
     ((rc == 130)) && host_interrupted
     trap - INT TERM
