@@ -37,12 +37,12 @@ test/vm/build-vm.sh --keep-running  # ... and leave it running
 test/vm/build-vm.sh --force         # delete an existing VM (not the ISO) and rebuild
 ```
 
-The build takes about 20 to 40 minutes and needs no input. It:
+The build needs no input. On the development machine it took about 11 minutes, 8 of them for the install itself. It:
 
 1. Checks the ISO's SHA-256. A mismatch aborts the build before anything is created.
 2. Generates the root password and an ed25519 SSH key in `credentials/`.
 3. Renders `kickstart/ks.cfg.in` and writes it as `ks.cfg` onto a small ISO labelled `OEMDRV`. Anaconda loads a kickstart from a volume with that label without any boot option, so the stock ISO boots unchanged.
-4. Creates the 20 GB single-file thin `.vmdk` and the `.vmx`: BIOS firmware, 1 vCPU, 1536 MiB, PVSCSI disk, vmxnet3 on NAT, snapshots disabled.
+4. Creates the 20 GB single-file thin `.vmdk` and the `.vmx`: BIOS firmware, 1 vCPU, 1536 MiB, PVSCSI disk, vmxnet3 on NAT, snapshots disabled, no floppy. PVSCSI and vmxnet3 are PCIe devices, so the `.vmx` also declares the PCIe root ports (`pciBridge4` to `pciBridge7`) that Workstation adds to the VMs it creates; without them the VM does not power on ("Too many PCI devices are already configured").
 5. Boots the installer headless (`vmrun start ... nogui`). The ISO's default boot entry checks the media first, which adds a minute or two. The kickstart prints its progress to a virtual serial port that writes to `build/install-serial.log`, and powers the VM off when it finishes. The build gives up after 90 minutes (`TSK_VM_INSTALL_TIMEOUT`, in seconds).
 6. Detaches both ISOs and the serial port, boots the installed system, waits for SSH and runs `verify-vm.sh`.
 
@@ -95,9 +95,9 @@ This prints one PASS/FAIL line per check and exits 1 if any fails. On the host, 
 
 `check-xfs-v4.sh` makes an XFS v4 (`crc=0`) image in the guest and tries to mount it.
 
-Result on AlmaLinux 9.9: _not yet recorded_.
+Result on AlmaLinux 9.9 (tested 2026-11-23, kernel 5.14.0-741.24.1.el9_9, xfsprogs 6.4.0-10.el9_9): **XFS v4 mounts.** The kernel is built with `CONFIG_XFS_SUPPORT_V4=y`. `mkfs.xfs -m crc=0` warns "V4 filesystems are deprecated and will not be supported by future versions", and the mount logs "Deprecated V4 format (crc=0) will not be supported beginning with RHEL10", but the mount succeeds.
 
-Because of this, XFS v4 is covered by fixture images built in the devcontainer, not by the Validation VM.
+The Validation VM's disk has no v4 file system. XFS v4 is covered by fixture images built in the devcontainer.
 
 ## Files
 

@@ -69,7 +69,7 @@ if [ -e "$TSK_VM_VMX" ] || [ -e "$TSK_VM_VMDK" ]; then
     fi
     vm_log "deleting the existing VM files"
     rm -rf "$TSK_VM_DIR/$TSK_VM_NAME".* "$TSK_VM_DIR/$TSK_VM_NAME".vmdk.lck \
-        "$TSK_VM_DIR"/vmware*.log "$TSK_VM_DIR"/*.nvram "$TSK_VM_DIR"/*.vmem \
+        "$TSK_VM_DIR"/vmware*.log "$TSK_VM_DIR"/nvram "$TSK_VM_DIR"/*.nvram "$TSK_VM_DIR"/*.vmem \
         "$TSK_VM_DIR"/*.vmss "$TSK_VM_DIR"/*.vmsn "$TSK_VM_DIR"/*.vmsd \
         "$TSK_VM_CRED_DIR" "$build_dir"
 fi
@@ -119,6 +119,20 @@ mainMem.useNamedFile = "FALSE"
 snapshot.disabled = "TRUE"
 msg.autoAnswer = "TRUE"
 tools.syncTime = "FALSE"
+floppy0.present = "FALSE"
+pciBridge0.present = "TRUE"
+pciBridge4.present = "TRUE"
+pciBridge4.virtualDev = "pcieRootPort"
+pciBridge4.functions = "8"
+pciBridge5.present = "TRUE"
+pciBridge5.virtualDev = "pcieRootPort"
+pciBridge5.functions = "8"
+pciBridge6.present = "TRUE"
+pciBridge6.virtualDev = "pcieRootPort"
+pciBridge6.functions = "8"
+pciBridge7.present = "TRUE"
+pciBridge7.virtualDev = "pcieRootPort"
+pciBridge7.functions = "8"
 scsi0.present = "TRUE"
 scsi0.virtualDev = "pvscsi"
 scsi0:0.present = "TRUE"
@@ -143,7 +157,8 @@ EOF
 
 # --- 6. Unattended install ---
 vm_log "starting the installation (headless; progress in $serial_log)"
-vm_vmrun start "$TSK_VM_VMX" nogui
+vm_vmrun start "$TSK_VM_VMX" nogui ||
+    vm_die "the VM did not power on; see $TSK_VM_DIR/vmware.log"
 start=$(date +%s)
 last_line=
 while vm_is_running; do

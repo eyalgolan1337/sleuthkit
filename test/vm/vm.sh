@@ -34,7 +34,8 @@ cmd_start() {
         vm_log "already running"
     else
         vm_log "starting $TSK_VM_NAME (headless)"
-        vm_vmrun start "$TSK_VM_VMX" nogui
+        vm_vmrun start "$TSK_VM_VMX" nogui ||
+            vm_die "the VM did not power on; see $TSK_VM_DIR/vmware.log"
     fi
 }
 
