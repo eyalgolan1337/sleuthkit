@@ -20,7 +20,7 @@ test/vm/validate.sh --fresh      # re-run bootstrap and configure first
 test/vm/validate.sh --base REF   # compare with REF instead of develop
 ```
 
-On the host, the command starts the devcontainer if necessary (`devcontainer up`) and runs itself inside it (`devcontainer exec`). It never builds in the host tree. The repository is mounted at the same path in both, so the report is visible on the host. If the tree was configured outside the devcontainer, gate 1 runs `make distclean` and configures again, and the report says so.
+On the host, the command starts the devcontainer if necessary (`devcontainer up`) and runs itself inside it (`devcontainer exec`). It never builds in the host tree. The repository is mounted at the same path in both, so the report is visible on the host. In a git worktree, the command uses the main checkout's devcontainer (a container opened on the worktree folder alone couldn't see the main checkout's `.git`), so the worktree must be inside the main checkout, for example under `.claude/worktrees/`. That container is built from the main checkout's `.devcontainer/`. If the tree was configured outside the devcontainer, gate 1 runs `make distclean` and configures again, and the report says so.
 
 "Changed" means changed since the merge-base of `develop` and `HEAD`: committed on the branch, staged, unstaged, or untracked and not ignored.
 

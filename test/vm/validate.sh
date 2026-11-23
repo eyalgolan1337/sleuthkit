@@ -67,6 +67,31 @@ devcontainer_cli() {
     npx --yes "@devcontainers/cli@$DEVCONTAINER_CLI_VERSION" "$@"
 }
 
+# Print the folder whose devcontainer must run this checkout. For the main
+# checkout that is $REPO. For a linked git worktree it is the main checkout: the
+# worktree's .git is only a file pointing into the main checkout's .git, and the
+# devcontainers CLI keys containers by folder, so opening the worktree folder
+# would start a second container that mounts the worktree alone and can't run
+# git. The main checkout's container mounts it at the same path, so a worktree
+# inside it is visible there. Fails for a worktree outside the main checkout.
+devcontainer_folder() {
+    local common main
+    if ! common=$(git -C "$REPO" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) ||
+        [[ ${common##*/} != .git ]]; then
+        printf '%s\n' "$REPO" # not a git checkout, or an unusual layout: use the folder itself
+        return
+    fi
+    main=${common%/.git}
+    if [[ $REPO != "$main" && $REPO != "$main"/* ]]; then
+        echo "error: this git worktree ($REPO) is outside the main checkout ($main)," \
+            "so the main checkout's devcontainer can't see it. Use a worktree inside $main" \
+            "(for example under .claude/worktrees/), or run this command inside a devcontainer" \
+            "that mounts this worktree." >&2
+        return 2
+    fi
+    printf '%s\n' "$main"
+}
+
 # On the host: never build here. Start the devcontainer if needed and re-run
 # this command inside it. The repo is mounted at the same path in both.
 if ! in_devcontainer; then
@@ -74,16 +99,20 @@ if ! in_devcontainer; then
         echo "error: delegated to the devcontainer, but this is not it (no /.dockerenv or gcc is not 16.1)" >&2
         exit 2
     fi
+    WORKSPACE=$(devcontainer_folder) || exit 2
     echo "Delegating to the devcontainer (this machine is not the devcontainer; nothing is built here)." >&2
+    if [[ $WORKSPACE != "$REPO" ]]; then
+        echo "This is a git worktree: using the devcontainer of the main checkout, $WORKSPACE." >&2
+    fi
     up_log=$(mktemp)
-    if ! devcontainer_cli up --workspace-folder "$REPO" >"$up_log" 2>&1; then
+    if ! devcontainer_cli up --workspace-folder "$WORKSPACE" >"$up_log" 2>&1; then
         echo "error: could not start the devcontainer; last lines of 'devcontainer up':" >&2
         tail -n 20 "$up_log" >&2
         rm -f "$up_log"
         exit 2
     fi
     rm -f "$up_log"
-    devcontainer_cli exec --workspace-folder "$REPO" \
+    devcontainer_cli exec --workspace-folder "$WORKSPACE" \
         env TSK_VALIDATE_DELEGATED=1 "$REPO/test/vm/validate.sh" "${ARGS[@]}"
     rc=$?
     case $rc in
