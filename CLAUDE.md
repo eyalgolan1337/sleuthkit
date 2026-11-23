@@ -40,13 +40,15 @@ devcontainer exec --workspace-folder . claude       # Claude Code inside (log in
 
 - `post-create.sh` bootstraps, configures, builds everything under bear and installs the clangd-lsp plugin.
 - `compile_commands.json` (gitignored) feeds clangd and clang-tidy. Regenerate it after adding or removing sources: `.devcontainer/build-compile-db.sh` (`--fresh` to re-run bootstrap and configure).
+- Configure with `CFLAGS` and `CXXFLAGS` set to `-g -O2 -fno-strict-aliasing` (the script does): without it, GCC 16.1 breaks every file system autodetection (`docs/llm/build-and-test.md`, trap 19).
 - Configure with `--without-libbfio` in the container (the script does). Debian's libewf exports bundled `libbfio_*` symbols, and linking the system libbfio next to it crashes every E01 close. This also turns off LVM pool support.
 - Do not mix host and container builds in one tree; run `make distclean` before switching.
 
 ## Build and test
 
 ```sh
-./bootstrap && ./configure --disable-java --without-libbfio
+./bootstrap && ./configure --disable-java --without-libbfio \
+    CFLAGS='-g -O2 -fno-strict-aliasing' CXXFLAGS='-g -O2 -fno-strict-aliasing'
 make -j"$(nproc)"
 make -j"$(nproc)" check                     # all tests; needs network the first time (tests/test_libraries.sh downloads images to tests/data)
 make -C unit_tests check                    # cppunit unit tests only

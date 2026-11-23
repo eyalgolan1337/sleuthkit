@@ -1,0 +1,25 @@
+# Expected differences between the harness Manifest of the self-test's ext4
+# image and the Ground truth capture of the directory it was built from
+# (test/vm/harness/selftest.sh). Known failure list format
+# (test/vm/README.md, "Known failure list"): a line that no longer matches a
+# difference fails the self-test, so remove it once it stops occurring.
+#
+# check           partition subject           difference  comment
+#
+# mkfs.ext4 -d builds a new file system; it can't keep these.
+harness-selftest  ext4      *                 inode       mkfs.ext4 -d allocates new inode numbers
+harness-selftest  ext4      *                 ctime       mkfs.ext4 -d sets ctime to the time it ran
+harness-selftest  ext4      *                 crtime      mkfs.ext4 -d sets crtime to the time it ran (the source's is its own file system's)
+harness-selftest  ext4      /                 mtime       mkfs.ext4 -d doesn't copy the root directory's mtime
+harness-selftest  ext4      /                 nlink       /lost+found adds a subdirectory to the root
+harness-selftest  ext4      /lost+found       extra       made by mkfs.ext4
+harness-selftest  ext4      /                 size        directory size: 1 KiB ext4 blocks vs the source file system's
+harness-selftest  ext4      /dir              size        directory size, as above
+harness-selftest  ext4      /dir/sub          size        directory size, as above
+harness-selftest  ext4      /dir/sub/deeper   size        directory size, as above
+harness-selftest  ext4      /empty-dir        size        directory size, as above
+harness-selftest  ext4      /sticky           size        directory size, as above
+#
+# libtsk defects found by this self-test (not fixed here).
+harness-selftest  ext4      /empty            mtime       libtsk reads ext4's 32-bit timestamps as unsigned: -1500000000 (1922) comes back as 2794967296 (2058)
+harness-selftest  ext4      /long-symlink     target      libtsk reads a slow symlink's target only from block-mapped inodes; ext4 maps it with extents, so meta->link is NULL

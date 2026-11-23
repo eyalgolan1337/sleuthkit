@@ -38,6 +38,14 @@ RUN curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key \
         clangd-${LLVM_VERSION} clang-format-${LLVM_VERSION} clang-tidy-${LLVM_VERSION} \
     && rm -rf /var/lib/apt/lists/*
 
+# Validation setup (test/vm/): the harness self-test builds an ext4 image
+# from a directory (mkfs.ext4 -d), partitions a disk image (sfdisk) and
+# converts it to .vmdk (qemu-img).
+RUN apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        e2fsprogs fdisk qemu-utils \
+    && rm -rf /var/lib/apt/lists/*
+
 # Unversioned tool names. clangd and clang-tidy are wrapped so they resolve
 # system headers from GCC 16.1 (/usr/local) instead of Debian's gcc-14.
 RUN LLVM_BIN=/usr/lib/llvm-${LLVM_VERSION}/bin \

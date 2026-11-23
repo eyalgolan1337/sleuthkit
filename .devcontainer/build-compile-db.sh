@@ -10,10 +10,24 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
+# -fno-strict-aliasing: at -O2, GCC 16.1 drops the stores that fill the
+# local FS_OPENERS table in tsk/fs/fs_open.c, so every file system
+# autodetection (tsk_fs_open_img with TSK_FS_TYPE_DETECT, plain fls) jumps
+# through stack garbage. See docs/llm/build-and-test.md, "Known defects and
+# traps".
+BUILD_FLAGS="-g -O2 -fno-strict-aliasing"
+configure_tree() {
+    # --without-libbfio: see the libewf/libbfio clash noted in .devcontainer/Dockerfile.
+    ./configure --disable-java --without-libbfio \
+        CFLAGS="$BUILD_FLAGS" CXXFLAGS="$BUILD_FLAGS"
+}
+
 if [[ "${1:-}" == "--fresh" || ! -f config.status ]]; then
     ./bootstrap
-    # --without-libbfio: see the libewf/libbfio clash noted in .devcontainer/Dockerfile.
-    ./configure --disable-java --without-libbfio
+    configure_tree
+elif ! grep -q -- '-fno-strict-aliasing' config.status; then
+    # A tree configured before the flag was added: configure it again.
+    configure_tree
 fi
 
 # Only translation units that are actually compiled get an entry, so clean
