@@ -25,7 +25,7 @@ fail() {
 
 echo "== host checks ($TSK_VM_DIR)"
 
-snapshots=$(vm_vmrun listSnapshots "$TSK_VM_VMX" | sed -n 's/^Total snapshots: //p')
+snapshots=$(vm_vmrun listSnapshots "$TSK_VM_VMX" | sed -n 's/^Total snapshots: //p') || true
 if [ "$snapshots" = 0 ]; then pass "no snapshots"; else fail "no snapshots (vmrun reports '$snapshots')"; fi
 
 if grep -q '^snapshot.disabled = "TRUE"' "$TSK_VM_VMX"; then
@@ -63,22 +63,18 @@ for key in 'numvcpus = "1"' 'memsize = "1536"' 'firmware = "bios"'; do
     if grep -qx "$key" "$TSK_VM_VMX"; then pass ".vmx has $key"; else fail ".vmx has $key"; fi
 done
 
-repo=$(git -C "$here" rev-parse --show-toplevel)
+repo=$(cd "$here/../.." && pwd) # test/vm/../.. (no git needed)
 case $TSK_VM_DIR/ in
 "$repo"/*) fail "VM directory is outside the repository" ;;
 *) pass "VM directory is outside the repository" ;;
 esac
 
 echo
-was_running=1
-vm_is_running || was_running=0
-"$here/vm.sh" up
 echo "== guest checks"
-if ! "$here/vm.sh" ssh 'bash -s' <"$here/guest/verify-layout.sh"; then
+if ! vm_up_for_script; then
+    fail "the VM starts and answers SSH"
+elif ! "$here/vm.sh" ssh 'bash -s' <"$here/guest/verify-layout.sh"; then
     fails=$((fails + 1))
-fi
-if [ "$was_running" = 0 ]; then
-    "$here/vm.sh" stop
 fi
 
 echo

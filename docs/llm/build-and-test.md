@@ -18,7 +18,7 @@ Facts here were checked against the source at tag `sleuthkit-4.15.0`. Nothing wa
 | `samples/` | Four small API examples (`callback-style.cpp`, `posix-style.cpp` and their C++ variants), built as `noinst_PROGRAMS`. | Reference |
 | `tests/` | API test programs (`read_apis.cpp`, `fs_fname_apis.cpp`, `fs_attrlist_apis.cpp`, `fs_thread_test.cpp` with `tsk_thread.cpp`) and the scripts `runtests.sh`, `test_libraries.sh`, `wine_wrapper.sh`. | Tests |
 | `unit_tests/` | CppUnit tests. Only `unit_tests/base/` exists (`test_base.cpp`, `errors_test.cpp`, `errors_test.h`). | Tests |
-| `test/` | Only `test/tools/autotools/test_loaddb.sh`, which no `Makefile.am` references. | Orphan |
+| `test/` | `test/tools/autotools/test_loaddb.sh`, which no `Makefile.am` references (orphan). `test/vm/`: scripts that build and control the Validation VM (AlmaLinux 9.9 under VMware Workstation); see `test/vm/README.md`. Not part of the autotools build. | Orphan; fork validation |
 | `m4/` | Autoconf macros: `tsk_opt_dep_check.m4` (optional-dependency logic), `cppunit.m4` (`AM_PATH_CPPUNIT`), `ax_pkg_check_modules.m4`, `ax_pthread.m4`, `ax_cxx_compile_stdcxx.m4`, Java macros, and the unused `ax_check_openssl.m4`. | Unix build |
 | `win32/` | Visual Studio solution `tsk-win.sln`, `libtsk/libtsk.vcxproj` (+ `.filters`, `packages.config`), one project directory per tool, `NugetPackages.props`, `updateAndBuildAll.py`, `BUILDING.txt`. | Windows build |
 | `configure.ac`, `Makefile.am` (top and per directory), `bootstrap` | The Unix build. | Unix build |

@@ -14,9 +14,7 @@ here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=vm-common.sh
 . "$here/vm-common.sh"
 
-was_running=1
-vm_is_running || was_running=0
-"$here/vm.sh" up >&2
+vm_up_for_script || exit 2
 rc=0
 "$here/vm.sh" ssh 'bash -s' <<'EOF' || rc=$?
 set -u
@@ -41,7 +39,8 @@ dmesg | grep -i xfs | tail -n 5 || true
 echo "RESULT: XFS v4 does not mount"
 exit 1
 EOF
-if [ "$was_running" = 0 ]; then
-    "$here/vm.sh" stop >&2
-fi
+case $rc in
+0 | 1 | 2) ;;
+*) rc=2 ;; # ssh itself failed (255) or the guest script died: the test did not run
+esac
 exit "$rc"

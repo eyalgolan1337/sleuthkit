@@ -3,6 +3,7 @@
 # Everything the VM needs at run time (VM files, ISO, credentials, SSH key) lives in
 # TSK_VM_DIR, outside the repository. Override TSK_VM_DIR to use another location.
 
+TSK_VM_SCRIPTS=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd) # this directory (test/vm)
 TSK_VM_NAME=tsk-xfs-alma9
 TSK_VM_DIR=${TSK_VM_DIR:-$HOME/vmware/$TSK_VM_NAME}
 TSK_VM_VMX=$TSK_VM_DIR/$TSK_VM_NAME.vmx
@@ -45,10 +46,20 @@ vm_is_running() {
 vm_ip() {
     local ip
     ip=$(vm_vmrun getGuestIPAddress "$TSK_VM_VMX" 2>/dev/null) || return 1
-    case $ip in
-    [0-9]*.[0-9]*.[0-9]*.[0-9]*) printf '%s\n' "$ip" ;;
-    *) return 1 ;;
-    esac
+    [[ $ip =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]] || return 1
+    printf '%s\n' "$ip"
+}
+
+# Start the VM and wait for SSH, for a script that needs it only while it runs. If the VM
+# was stopped, an EXIT trap stops it again however the script ends (failure or interrupt
+# included), so the VM is left in the state it was found in. The trap replaces any EXIT
+# trap the script set before. Returns non-zero if the VM does not start or SSH does not
+# answer.
+vm_up_for_script() {
+    if ! vm_is_running; then
+        trap '"$TSK_VM_SCRIPTS/vm.sh" stop >&2 || true' EXIT
+    fi
+    "$TSK_VM_SCRIPTS/vm.sh" up >&2
 }
 
 # Options for every ssh call. The host key is recorded under an alias, not the IP, so a new

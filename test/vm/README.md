@@ -6,7 +6,7 @@ The Validation VM is a small AlmaLinux 9.9 virtual machine under VMware Workstat
 
 On the host (Linux):
 
-- VMware Workstation 17 (tested with 17.6.2) with its kernel modules loaded: `/dev/vmmon` must exist and `systemctl status vmware` must be active. With Secure Boot on, the `vmmon` and `vmnet` modules must be signed with a key enrolled in MOK (`mokutil --test-key <cert>` must say it is enrolled). Otherwise every VM fails to start.
+- VMware Workstation 17.5 or newer (tested with 17.6.2; the `.vmx` uses virtual hardware version 21, which 17.0 to 17.4 cannot open) with its kernel modules loaded: `/dev/vmmon` must exist and `systemctl status vmware` must be active. With Secure Boot on, the `vmmon` and `vmnet` modules must be signed with a key enrolled in MOK (`mokutil --test-key <cert>` must say it is enrolled). Otherwise every VM fails to start.
 - The NAT network `vmnet8` with DHCP (the VMware default).
 - `vmrun`, `vmware-vdiskmanager` (both come with Workstation), `openssl`, `ssh`, `ssh-keygen`, `sha256sum`, and one of `xorriso`, `genisoimage` or `mkisofs`.
 - Network access during the install (see [Installation sources](#installation-sources)).
@@ -97,7 +97,7 @@ This prints one PASS/FAIL line per check and exits 1 if any fails. On the host, 
 
 Result on AlmaLinux 9.9 (tested 2026-11-23, kernel 5.14.0-741.24.1.el9_9, xfsprogs 6.4.0-10.el9_9): **XFS v4 mounts.** The kernel is built with `CONFIG_XFS_SUPPORT_V4=y`. `mkfs.xfs -m crc=0` warns "V4 filesystems are deprecated and will not be supported by future versions", and the mount logs "Deprecated V4 format (crc=0) will not be supported beginning with RHEL10", but the mount succeeds.
 
-The Validation VM's disk has no v4 file system. XFS v4 is covered by fixture images built in the devcontainer.
+The Validation VM's disk has no v4 file system. The validation setup plans to cover v4 with fixture images built in the devcontainer (#16).
 
 ## Files
 
