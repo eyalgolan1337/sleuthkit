@@ -35,13 +35,13 @@ Run it on the host. Inside the devcontainer the command still runs every gate, b
 
 | Gate | What it checks | Status |
 |------|----------------|--------|
-| 1 | Clean build of the library, tools, samples, test programs and the validation setup's C++ tools under `bear` (`.devcontainer/build-compile-db.sh`), which also regenerates `compile_commands.json`. The [static guest build](#the-static-guest-build). Then a syntax-only compile of each changed C++ file as C++17 and as C++20, the [comparison step's self-test](#gate-1-comparison-step-self-test) and the [harness self-test](#gate-1-harness-self-test). | Implemented |
+| 1 | Clean build of the library, tools, samples, test programs and the validation setup's C++ tools under `bear` (`.devcontainer/build-compile-db.sh`), which also regenerates `compile_commands.json`. The [static guest build](#the-static-guest-build). Then a syntax-only compile of each changed C++ file as C++17 and as C++20, the [comparison step's self-test](#gate-1-comparison-step-self-test), the [harness self-test](#gate-1-harness-self-test), the [Known failure list check](#gate-1-known-failure-list-check) and the [XFS fixture images](#gate-1-xfs-fixture-images) check. | Implemented |
 | 2 | The full `make check`. | Implemented |
 | 3 | **Strict checks** of `/data`, `/data-compat` and the **Control file system** on the Validation VM, each with its [CLI tool checks](#gate-3-cli-tool-checks) (`fls`, `icat`, `fsstat`, `istat`): [Gate 3: Strict checks](#gate-3-strict-checks). | Implemented |
 | 4 | **Best-effort checks** of `/` and `/boot` on the Validation VM, in use, with no freeze and no cache flush: [Gate 4: Best-effort checks](#gate-4-best-effort-checks). | Implemented |
 | 5 | `clang-format` and `clang-tidy` on changed lines only. | Implemented |
 
-A gate that doesn't exist yet appears in the report as `NOT IMPLEMENTED`. It neither passes nor fails.
+All five gates are implemented. A gate file that calls `gate_not_implemented` instead (see [Adding a check](#adding-a-check)) appears in the report as `NOT IMPLEMENTED`, and neither passes nor fails.
 
 ### Gate 1: C++17 and C++20 syntax
 
@@ -59,6 +59,14 @@ A changed header is checked through every compiled C++ source that includes it, 
 ### Gate 1: harness self-test
 
 `build/vm-tools/harness-selftest` (CppUnit) checks the harness's command line, its mapping from libtsk metadata to Manifest entries, its `!error` Manifests, and its walk over a small ext4 image made with `mkfs.ext4 -d`: entries and their order, content hashes, hard links, symlinks, and the partition found through a GPT volume system, by offset or missing. Then `test/vm/harness/selftest.sh` checks the harness and Ground truth capture end to end on an ext4 image, and that `host-run.sh`, the [Host-side run](#gate-3-strict-checks)'s script, refuses a writable image or directory. See [Harness self-test](#harness-self-test).
+
+### Gate 1: Known failure list check
+
+Each comparison of gates 3 and 4 reads only the lines of the [Known failure list](#known-failure-list) with its own check and partition, and fails a line it reads that no longer matches anything. A line that no comparison reads, for example with a misspelled check name or for a partition that is no longer checked, would never be found stale. Gate 1 therefore checks the whole list: `compare-manifests --lint-known-failures test/vm/known-failures.txt --comparisons <every check:partition of gates 3 and 4>` (the list of comparisons is `vm_comparisons` in `test/vm/lib/vm_checks.sh`, built from the same arrays the gates loop over). A line outside them is a failure naming its line number. A malformed line is a failure too, even one only an unchecked comparison would read.
+
+### Gate 1: XFS fixture images
+
+`test/vm/fixtures/xfs/xfs-fixtures.py verify` checks every committed [XFS fixture image](#xfs-fixture-images) against its committed expected Manifest, so a change to the Manifest format, the comparison step or the images can't leave them out of step. It takes about 20 seconds. A failed variant is a failure naming it.
 
 ### Gate 3: Strict checks
 
@@ -206,7 +214,7 @@ Compiler warnings are listed only for changed files. Warnings in unchanged upstr
 
 ## Adding a check
 
-Later parts of the setup add checks to the gate files in `test/vm/gates/` (`gate<n>.sh`, one `gate_<n>` function each) using the report API in `test/vm/lib/report.sh`:
+Checks live in the gate files in `test/vm/gates/` (`gate<n>.sh`, one `gate_<n>` function each) and report through the API in `test/vm/lib/report.sh`. Checks of the Validation VM's results (gates 3 and 4) also share `test/vm/lib/vm_results.sh`: `vm_compare` runs the comparison step with the Known failure list, `vm_host_run` reads a Host-side run's outcome. A new check of the VM gets its Known failure check name from the comparisons in `vm_comparisons` (`lib/vm_checks.sh`), so that [gate 1](#gate-1-known-failure-list-check) accepts its lines:
 
 ```sh
 gate_1() {
@@ -316,6 +324,7 @@ build/vm-tools/compare-manifests --ground-truth GT --run RUN --mode strict|best-
 | `--volatile` | The [Volatile path list](#volatile-path-list) (`best-effort` only; ignored in `strict`) |
 | `--known-failures` | The [Known failure list](#known-failure-list). Needs `--check` and `--partition`, which select its lines. |
 | `--items` | Append findings to this file in the validate command's report protocol (`fail`, `warn` or `note`, a tab, the text): at most `--max-items` (default 20) failures and as many warnings, a count of the rest, and a summary note. Gates pass `$VALIDATE_ITEMS`. |
+| `--lint-known-failures FILE --comparisons CHECK:PARTITION,...` | Instead of comparing, check the whole Known failure list: exit status `1`, with one `fail` item per line, if a line belongs to none of the comparisons (see [Gate 1: Known failure list check](#gate-1-known-failure-list-check)). Takes only `--items` besides. |
 
 The full per-entry report goes to standard output, so it ends up in the check's log. Each finding is one line, starting with `FAIL`, `WARN`, `KNOWN` or `NOTE` and naming the encoded path, the difference and both values. The last line gives the result and the counts. Exit status: `0` if nothing failed (warnings allowed), `1` if anything failed, `2` for bad usage or unreadable input (a missing file, or a malformed Manifest or list, reported with its line number).
 
@@ -346,6 +355,7 @@ strict-guest   sda6       *                crtime          the same for every en
 - `difference` is `missing`, `extra`, one of the 12 compared field names, one of the 7 summary fields of the `fsstat` checks (`fs-type`, `block-size`, `inode-size`, `group-count`, `uuid`, `label`, `version`, with the subject `*`), or `error:<code>`, which needs the subject `*`. `error:<code>` covers a run whose Manifest has `!error` with that code, i.e. a whole-file-system failure such as "file system not recognised".
 - The rest of the line is a free-text comment that is shown in the report. Say why the failure is expected and which issue fixes it.
 - Blank lines and lines starting with `#` are skipped. A duplicate line or an unknown difference is an error (exit status 2).
+- Every line must belong to a comparison that gates 3 and 4 run; [gate 1 checks this](#gate-1-known-failure-list-check).
 
 The committed list is `test/vm/known-failures.txt`. It records `/data` (`sda4`) and `/data-compat` (`sda5`) as `* error:fs-open` for `strict-guest` and `strict-host` and for each CLI tool check: no XFS support yet. On the Control file system (`sda6`), it records the libtsk ext4 defects the [Test corpus](#the-test-corpus) exposes, path by path, on both sides: times before 1970 and after 2106 (#30), slow symlinks with no target (#31), and three phantom names in the 50,000-entry directory (#32). The phantom names are bytes of the directory's htree index: name hashes (seeded per file system) and logical block numbers, both the same in every run on this file system. Two runs gave the same three names. `fls` lists the phantom names too, so they are also `extra` for `fls-guest` and `fls-host`. `fls` also prints a socket's metadata type as `h` (`s/h`): `tsk_fs_meta_type_str` has `s` and `h` in the wrong order for `TSK_FS_META_TYPE_ENUM`, an upstream output defect, so `/corpus/special/socket` is a `type` Known failure of both `fls` checks. `/boot` (`sda2`) and `/` (`sda3`) are `* error:fs-open` for `best-effort-guest` and `best-effort-host`, for the same reason: no XFS support yet.
 
@@ -373,7 +383,7 @@ Keep the lists short: a path belongs here only if the running system changes it 
 - the format: hand-written example lines, round-trips of awkward paths and symlink targets (spaces, tabs, newlines, every byte value, non-UTF-8 bytes, 255-byte names, `-`), timestamps before 1970 and after 2262, `!error` lines, and rejection of malformed and non-canonical input;
 - Strict mode: identical Manifests pass; a missing entry, an extra entry, a wrong hash, a wrong size, a one-nanosecond mtime difference and each other compared field fail; an atime difference is ignored;
 - Best-effort mode: a difference under a Volatile path, or on an entry with a recent ctime (in Ground truth or in the run), is a warning, but the same pair fails in Strict mode; an old-ctime difference outside Volatile paths fails; both ends of the ctime window, and a ctime after the run (a misread one) tolerates nothing;
-- Known failures: a listed difference is tolerated; a listed one that now passes fails; lines for other checks or partitions are ignored; `*` subjects; whole-run errors ("file system not recognised") tolerated, stale or with another code; list parsing;
+- Known failures: a listed difference is tolerated; a listed one that now passes fails; lines for other checks or partitions are ignored; `*` subjects; whole-run errors ("file system not recognised") tolerated, stale or with another code; list parsing; the check of the whole list for lines no comparison reads;
 - the `compare-manifests` command: exit statuses, report, items and their cap, and usage and input errors.
 
 The same binary, `manifest-selftest`, also links `sha256_selftest.cpp`, `../capture/capture_selftest.cpp`, `../corpus/corpus_selftest.cpp` and `../toolcheck/toolcheck_selftest.cpp` (the [CLI tool checks' self-test](#gate-3-cli-tool-checks)):
@@ -628,7 +638,7 @@ test/vm/fixtures/xfs/xfs-fixtures.py verify [VARIANT...]  # check the committed 
 test/vm/fixtures/xfs/xfs-fixtures.py check [VARIANT...]   # rebuild in a temporary directory; compare with the committed Manifests
 ```
 
-Run it in the devcontainer, as an ordinary user. It needs `xfsprogs` and `xz` (both in the devcontainer image; rebuild the container if `mkfs.xfs` is missing) and builds `build/vm-tools/compare-manifests` if necessary. Nothing is mounted and nothing needs root. `--keep DIR` also copies the uncompressed images and Manifests to `DIR`. A full `build` takes under a minute, most of it for `xz -9`.
+Gate 1 of the validate command runs `verify` on every variant. Run it in the devcontainer, as an ordinary user. It needs `xfsprogs` and `xz` (both in the devcontainer image; rebuild the container if `mkfs.xfs` is missing) and builds `build/vm-tools/compare-manifests` if necessary. Nothing is mounted and nothing needs root. `--keep DIR` also copies the uncompressed images and Manifests to `DIR`. A full `build` takes under a minute, most of it for `xz -9`.
 
 How an image is built:
 
@@ -768,6 +778,7 @@ The Validation VM's disk has no v4 file system. The [XFS fixture images](#xfs-fi
 | `guest-build.sh` | devcontainer | The [static guest build](#the-static-guest-build) |
 | `host-build.sh` | devcontainer | The normal build's library and `tsk-harness`, for the Host-side runs |
 | `host-run.sh` | one-off container | The Host-side run: read-only probe, then the harness on the `.vmdk`; started by `collect-vm.sh` |
-| `lib/vm_checks.sh` | both | The Strict check and Best-effort check partitions and mount points, shared by `collect-vm.sh` and gates 3 and 4 |
+| `lib/vm_checks.sh` | both | The Strict check and Best-effort check partitions and mount points, shared by `collect-vm.sh` and gates 3 and 4, and the comparisons they run (`vm_comparisons`, for gate 1's Known failure list check) |
+| `lib/vm_results.sh` | devcontainer | What gates 3 and 4 share when they read the collected results: the comparison with Known failures, a Host-side run's outcome |
 | `volatile-paths/` | devcontainer | The committed [Volatile path lists](#volatile-path-list) |
 | `known-failures.txt` | devcontainer | The committed [Known failure list](#known-failure-list) |

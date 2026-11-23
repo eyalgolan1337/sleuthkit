@@ -38,6 +38,24 @@ struct KnownFailure {
 bool read_known_failures(
     std::istream &in, std::vector<KnownFailure> &out, std::string &error);
 
+// A comparison the validate command runs: one check on one partition. Only
+// the Known failure lines with the same check and partition apply to it.
+struct Comparison {
+    std::string check;
+    std::string partition;
+};
+
+// Parses "CHECK:PARTITION[,CHECK:PARTITION...]".
+bool parse_comparisons(
+    const std::string &text, std::vector<Comparison> &out, std::string &error);
+
+// The lines of a Known failure list that none of the comparisons reads, for
+// example a misspelled check name or a partition no gate checks. Such a line
+// can never be found stale, so the validate command fails on it.
+std::vector<KnownFailure> unread_known_failures(
+    const std::vector<KnownFailure> &list,
+    const std::vector<Comparison> &comparisons);
+
 // One encoded path per line; blank lines and lines starting with '#' are
 // skipped. A Volatile path covers itself and everything below it.
 bool read_volatile_paths(

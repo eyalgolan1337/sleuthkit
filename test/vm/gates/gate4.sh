@@ -12,6 +12,8 @@
 
 # shellcheck source=../lib/vm_checks.sh
 source "$VALIDATE_LIB/vm_checks.sh"
+# shellcheck source=../lib/vm_results.sh
+source "$VALIDATE_LIB/vm_results.sh"
 
 # The steps of the Strict check sequence that a Best-effort check must not
 # take: freezing and flushing caches.
@@ -20,10 +22,7 @@ GATE4_FORBIDDEN_STEPS=(freeze unfreeze flush)
 # gate4_collected <dir> <what>: the collection reached this check.
 gate4_collected() {
     local dir=$1 what=$2
-    if [[ ! -f $RUN_DIR/vm/status ]]; then
-        item_fail "no results from the Validation VM: this gate needs the host, which collects them before entering the devcontainer. Run test/vm/validate.sh on the host."
-        return 1
-    fi
+    vm_require_collected || return 1
     if [[ ! -f $dir/steps.tsv ]]; then
         item_fail "$what was not checked: the collection of the VM's results stopped before it (see gate 3's Validation VM check and logs/vm-collect.log)"
         return 1
@@ -65,21 +64,10 @@ gate4_window() {
 # the Best-effort comparison of a run's Manifest with Ground truth, its
 # findings as items: failures, then each tolerated difference as a warning.
 gate4_compare() {
-    local gt=$1 run=$2 run_time=$3 check=$4 part=$5 out=$6 rc line
+    local gt=$1 run=$2 run_time=$3 check=$4 part=$5 out=$6
     echo "== comparison (best-effort, run time $run_time, Volatile paths $VOLATILE_PATHS_DIR/$part.txt)"
-    if ! make -s -j"$JOBS" -f test/vm/manifest/manifest.mk build/vm-tools/compare-manifests; then
-        item_fail "could not build compare-manifests; see the log"
-        return 1
-    fi
-    build/vm-tools/compare-manifests --ground-truth "$gt" --run "$run" --mode best-effort \
-        --run-time "$run_time" --volatile "$VOLATILE_PATHS_DIR/$part.txt" \
-        --known-failures "$KNOWN_FAILURES" --check "$check" --partition "$part" \
-        --items "$VALIDATE_ITEMS" | tee "$out"
-    rc=${PIPESTATUS[0]}
-    while IFS= read -r line; do
-        item_note "Known failure: ${line#KNOWN }"
-    done < <(grep '^KNOWN ' "$out")
-    ((rc == 0))
+    vm_compare "$out" "$check" "$part" --ground-truth "$gt" --run "$run" --mode best-effort \
+        --run-time "$run_time" --volatile "$VOLATILE_PATHS_DIR/$part.txt"
 }
 
 # Best-effort check, Guest side, of one partition: its steps, then the
@@ -132,31 +120,13 @@ gate4_guest() {
 # Guest side's Ground truth.
 gate4_host() {
     local part=$1 mnt=$2 dir=$RUN_DIR/vm/best-effort-host/$1 guest_dir=$RUN_DIR/vm/best-effort-guest/$1
-    local gt=$guest_dir/ground-truth.manifest name rc secs line run_time
+    local gt=$guest_dir/ground-truth.manifest run_time
     if [[ -f $guest_dir/steps.tsv && ! -f $dir/steps.tsv ]]; then
         item_fail "$mnt ($part) was not checked on the Host side: the Best-effort check stopped before the Host-side run (see the Guest side check)"
         return 1
     fi
     gate4_collected "$dir" "$mnt ($part) on the Host side" || return 1
-    echo "== host-run (exit status, seconds)"
-    cat "$dir/steps.tsv"
-    echo "== host-run.log"
-    cat "$dir/host-run.log"
-    while IFS= read -r line; do
-        case $line in
-        read-only:*) item_note "one-off container: write refused, ${line#read-only: }" ;;
-        WRITABLE:*) item_fail "one-off container: ${line#WRITABLE: } is writable; it must be mounted read-only" ;;
-        esac
-    done <"$dir/host-run.log"
-    IFS=$'\t' read -r name rc secs <"$dir/steps.tsv"
-    case $rc in
-    0 | 1) ;; # 1: an incomplete or failed run; the comparison reports it
-    3) return 1 ;; # writable paths, reported above; no Manifest
-    *)
-        item_fail "$mnt ($part): the Host-side run failed (exit $rc): $(tail -n1 "$dir/host-run.log")"
-        return 1
-        ;;
-    esac
+    vm_host_run "$dir" "$mnt ($part)" || return 1
     if [[ ! -s $gt || ! -s $dir/host.manifest ]]; then
         item_fail "$mnt ($part): no Manifest to compare (Ground truth or the Host-side run is missing)"
         return 1

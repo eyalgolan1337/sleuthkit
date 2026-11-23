@@ -42,10 +42,12 @@ RUN curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key \
 # from a directory (mkfs.ext4 -d), partitions a disk image (sfdisk) and
 # converts it to .vmdk (qemu-img). The XFS fixture images (test/vm/fixtures/xfs/)
 # are built from protofiles and inspected with xfsprogs, all on image files
-# (no mount, no root), and stored xz-compressed.
+# (no mount, no root), and stored xz-compressed. python3 runs gate 1's
+# build-log and C++17/C++20 checks, the guest build's tree copy and the
+# fixture script (the base image already has it; this makes it explicit).
 RUN apt-get update \
     && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        e2fsprogs fdisk qemu-utils xfsprogs xz-utils \
+        e2fsprogs fdisk python3 qemu-utils xfsprogs xz-utils \
     && rm -rf /var/lib/apt/lists/*
 
 # Unversioned tool names. clangd and clang-tidy are wrapped so they resolve

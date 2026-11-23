@@ -1183,6 +1183,9 @@ class CompareCliTest : public CppUnit::TestFixture {
     CPPUNIT_TEST(testItemsAreCapped);
     CPPUNIT_TEST(testBadUsageExitsTwo);
     CPPUNIT_TEST(testBadInputExitsTwo);
+    CPPUNIT_TEST(testLintPassesWhenEveryLineIsRead);
+    CPPUNIT_TEST(testLintFailsOnALineNoComparisonReads);
+    CPPUNIT_TEST(testLintBadUsageAndInputExitTwo);
     CPPUNIT_TEST_SUITE_END();
 
   public:
@@ -1345,6 +1348,73 @@ class CompareCliTest : public CppUnit::TestFixture {
         CPPUNIT_ASSERT_EQUAL(int(COMPARE_ERROR), r.status);
         CPPUNIT_ASSERT_MESSAGE(
             r.err, r.err.find(vol + ": line 1") != std::string::npos);
+    }
+
+    // A Known failure line can go stale only if a comparison reads it, so
+    // the validate command lints the list against the comparisons it runs.
+    void testLintPassesWhenEveryLineIsRead()
+    {
+        TempDir t;
+        const std::string known = t.write("known",
+            "# comment\n"
+            "strict-guest sda4 * error:fs-open no XFS yet\n"
+            "fls-host sda6 /a extra phantom name\n");
+        const std::string items = t.file("items");
+        const CliRun r = cli({"--lint-known-failures", known, "--comparisons",
+            "strict-guest:sda4,strict-host:sda4,fls-host:sda6", "--items",
+            items});
+        CPPUNIT_ASSERT_EQUAL_MESSAGE(r.err, int(COMPARE_PASS), r.status);
+        const std::string it = slurp(items);
+        CPPUNIT_ASSERT_EQUAL_MESSAGE(
+            it, size_t(0), count_lines_starting(it, "fail\t"));
+        CPPUNIT_ASSERT_MESSAGE(
+            it, it.find("note\t2 Known failure line(s)") != std::string::npos);
+    }
+
+    void testLintFailsOnALineNoComparisonReads()
+    {
+        TempDir t;
+        const std::string known = t.write("known",
+            "strict-guest sda4 * error:fs-open no XFS yet\n"
+            "strict-gest sda4 /a size misspelled check\n"
+            "strict-guest sda9 /a size no such partition\n");
+        const std::string items = t.file("items");
+        const CliRun r = cli({"--lint-known-failures", known, "--comparisons",
+            "strict-guest:sda4", "--items", items});
+        CPPUNIT_ASSERT_EQUAL_MESSAGE(r.err, int(COMPARE_FAIL), r.status);
+        const std::string it = slurp(items);
+        CPPUNIT_ASSERT_EQUAL_MESSAGE(
+            it, size_t(2), count_lines_starting(it, "fail\t"));
+        CPPUNIT_ASSERT_MESSAGE(it,
+            it.find("fail\tline 2: strict-gest sda4: no comparison reads") !=
+                std::string::npos);
+        CPPUNIT_ASSERT_MESSAGE(it,
+            it.find("fail\tline 3: strict-guest sda9: no comparison reads") !=
+                std::string::npos);
+    }
+
+    void testLintBadUsageAndInputExitTwo()
+    {
+        TempDir t;
+        const std::string good = t.write("good", "strict-guest sda4 /a size\n");
+        const std::string bad = t.write("bad", "strict-guest sda4 /a colour\n");
+        const std::vector<std::vector<std::string>> cases = {
+            {"--lint-known-failures", good},
+            {"--lint-known-failures", good, "--comparisons", ""},
+            {"--lint-known-failures", good, "--comparisons", "strict-guest"},
+            {"--lint-known-failures", good, "--comparisons", "a:b,,c:d"},
+            {"--lint-known-failures", good, "--comparisons", "a:*"},
+            {"--lint-known-failures", good, "--comparisons", "a:b", "--mode",
+                "strict"},
+            {"--lint-known-failures", t.file("absent"), "--comparisons", "a:b"},
+            {"--lint-known-failures", bad, "--comparisons", "a:b"},
+        };
+        for (const auto &args : cases) {
+            const CliRun r = cli(args);
+            CPPUNIT_ASSERT_EQUAL_MESSAGE(
+                args.back() + ": " + r.out, int(COMPARE_ERROR), r.status);
+            CPPUNIT_ASSERT(!r.err.empty());
+        }
     }
 };
 CPPUNIT_TEST_SUITE_REGISTRATION(CompareCliTest);
