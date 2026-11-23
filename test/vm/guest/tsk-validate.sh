@@ -10,6 +10,8 @@
 #   tsk-validate.sh freeze MNT SECONDS         sync, arm the unfreeze timer, fsfreeze -f
 #   tsk-validate.sh unfreeze MNT               fsfreeze -u if frozen, disarm the timer
 #   tsk-validate.sh capture MNT OUT            Ground truth of MNT into OUT
+#   tsk-validate.sh capture-fs MNT OUT         Ground truth of the file system on MNT
+#                                              alone, without what is mounted below it
 #   tsk-validate.sh flush DEV                  flush DEV's buffer cache, drop page caches
 #   tsk-validate.sh run DEV OUT                Guest-side run: the harness on DEV into OUT
 #   tsk-validate.sh capture-tools MNT DEV DIR PATH...
@@ -181,6 +183,30 @@ cmd_unfreeze() {
 
 cmd_capture() { "$BIN/capture-ground-truth" -o "$2" "$1"; }
 
+# Ground truth of the file system mounted on MNT as it is on its device, for
+# the Best-effort checks of / and /boot. Other file systems are mounted on
+# directories of / (/boot, /proc, /run, /data, ...), and stat of such a
+# directory describes the mounted root, not the directory TSK reads on the
+# device. A non-recursive bind mount of MNT shows the file system without
+# them. It is made read-only and noatime, and lives in /run (tmpfs), so the
+# capture changes nothing on MNT.
+cmd_capture_fs() {
+    local mnt=$1 out=$2 view rc
+    view=/run/tsk-validate/view${mnt//\//_}
+    mkdir -p "$view" || die "cannot create $view"
+    # Left over from an interrupted capture.
+    mountpoint -q "$view" && { umount "$view" || die "cannot unmount the old $view"; }
+    mount --bind "$mnt" "$view" || die "mount --bind $mnt $view failed"
+    if ! mount -o remount,bind,ro,noatime "$view"; then
+        umount "$view"
+        die "could not make the bind mount $view read-only"
+    fi
+    "$BIN/capture-ground-truth" -o "$out" "$view"
+    rc=$?
+    umount "$view" || die "umount $view failed"
+    return "$rc"
+}
+
 cmd_flush() {
     blockdev --flushbufs "$1" || die "blockdev --flushbufs $1 failed"
     echo 3 >/proc/sys/vm/drop_caches || die "could not drop the page caches"
@@ -280,6 +306,7 @@ corpus-formats) cmd_corpus_formats "$@" ;;
 freeze) cmd_freeze "$@" ;;
 unfreeze) cmd_unfreeze "$@" ;;
 capture) cmd_capture "$@" ;;
+capture-fs) cmd_capture_fs "$@" ;;
 flush) cmd_flush "$@" ;;
 run) cmd_run "$@" ;;
 capture-tools) cmd_capture_tools "$@" ;;

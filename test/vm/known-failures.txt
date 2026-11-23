@@ -7,10 +7,12 @@
 # Checks: strict-guest and strict-host (gate 3, the Guest-side run and the
 # Host-side run of the Strict check); fls-guest, icat-guest, fsstat-guest,
 # istat-guest and their -host twins (gate 3, the CLI tool checks of each
-# side). Summary fields (fs-type, block-size, inode-size, group-count, uuid,
-# label, version) are differences of the fsstat checks.
-# Partitions: the guest's device names (sda4 /data, sda5 /data-compat,
-# sda6 /control, the Control file system).
+# side); best-effort-guest and best-effort-host (gate 4, the Guest-side run
+# and the Host-side run of the Best-effort check). Summary fields (fs-type,
+# block-size, inode-size, group-count, uuid, label, version) are differences
+# of the fsstat checks.
+# Partitions: the guest's device names (sda2 /boot, sda3 /, sda4 /data,
+# sda5 /data-compat, sda6 /control, the Control file system).
 
 # check        partition  subject  difference     comment
 strict-guest   sda4       *        error:fs-open  /data is XFS: file system not recognised (no XFS support yet, #11)
@@ -74,3 +76,10 @@ fls-host       sda6       /corpus/dirs/btree/%E6                        extra   
 # here; the harness reads meta->type and isn't affected.
 fls-guest      sda6       /corpus/special/socket                        type    fls prints a socket as s/h (tsk_fs_meta_type_str order)
 fls-host       sda6       /corpus/special/socket                        type    fls prints a socket as s/h (tsk_fs_meta_type_str order)
+
+# Gate 4, Best-effort checks.
+# check            partition  subject  difference     comment
+best-effort-guest  sda2       *        error:fs-open  /boot is XFS: file system not recognised (no XFS support yet, #11)
+best-effort-guest  sda3       *        error:fs-open  / is XFS: file system not recognised (no XFS support yet, #11)
+best-effort-host   sda2       *        error:fs-open  /boot is XFS: file system not recognised (no XFS support yet, #11)
+best-effort-host   sda3       *        error:fs-open  / is XFS: file system not recognised (no XFS support yet, #11)

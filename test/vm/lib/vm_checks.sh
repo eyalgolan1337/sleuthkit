@@ -1,15 +1,25 @@
 # shellcheck shell=bash
 # What the Validation VM's checks cover, shared by the host-side collection
-# (test/vm/collect-vm.sh) and gate 3 (test/vm/gates/gate3.sh).
+# (test/vm/collect-vm.sh) and gates 3 and 4 (test/vm/gates/gate3.sh,
+# gate4.sh).
 
 # Strict checks: "partition mount-point", one per file system. The partition
 # name is the /dev name in the guest, and the name used in the Known failure
-# list. / and /boot get Best-effort checks instead (gate 4, #21).
+# list. / and /boot get Best-effort checks instead (gate 4).
 STRICT_PARTITIONS=(
     "sda4 /data"
     "sda5 /data-compat"
     "sda6 /control"
 )
+
+# Best-effort checks (gate 4): "partition mount-point", for the file systems
+# in use that can't be frozen. Each has a committed Volatile path list,
+# $VOLATILE_PATHS_DIR/<partition>.txt, relative to the repository root.
+BEST_EFFORT_PARTITIONS=(
+    "sda2 /boot"
+    "sda3 /"
+)
+VOLATILE_PATHS_DIR=test/vm/volatile-paths
 
 # The Control file system.
 CONTROL_PARTITION=sda6
