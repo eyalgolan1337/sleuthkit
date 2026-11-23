@@ -57,12 +57,12 @@ make -j"$JOBS" -C tools/fstools LDFLAGS=-all-static "${TOOLS[@]}"
 
 echo "== harness and Ground truth capture"
 make -j"$JOBS" -f test/vm/manifest/manifest.mk BUILD_DIR="$OUT/vm-tools" \
-    harness-static capture-static
+    harness-static capture-static corpus-static
 
 mkdir -p "$BIN"
 bad=0
 for f in "${TOOLS[@]/#/tools/fstools/}" "$OUT/vm-tools/static/tsk-harness" \
-    "$OUT/vm-tools/static/capture-ground-truth"; do
+    "$OUT/vm-tools/static/capture-ground-truth" "$OUT/vm-tools/static/tsk-corpus"; do
     # Stripped: the guest copy is sent over SSH on every run.
     strip --strip-debug -o "$BIN/${f##*/}" "$f"
     desc=$(file -b "$BIN/${f##*/}")

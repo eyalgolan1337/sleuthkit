@@ -21,7 +21,7 @@ The Validation VM's own view of a mounted file system (its paths, file types, si
 _Avoid_: expected output, reference listing
 
 **Test corpus**:
-The generated set of files and directories on the dedicated `/data` file system, built to exercise each on-disk format variant.
+The generated set of files and directories on the Validation VM's `/data`, `/data-compat` and Control file systems, built from a fixed seed to exercise each on-disk format variant.
 _Avoid_: fixtures, sample data
 
 **Control file system**:

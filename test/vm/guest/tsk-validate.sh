@@ -5,7 +5,8 @@
 #
 #   tsk-validate.sh tools                      run each static tool once (no glibc errors)
 #   tsk-validate.sh check-mount DEV MNT        DEV is mounted on MNT
-#   tsk-validate.sh corpus MNT                 (re)create the starter corpus in MNT/corpus
+#   tsk-validate.sh corpus MNT SIZE            (re)generate the Test corpus in MNT/corpus
+#   tsk-validate.sh corpus-formats MNT DEV     XFS: check the corpus's on-disk formats
 #   tsk-validate.sh freeze MNT SECONDS         sync, arm the unfreeze timer, fsfreeze -f
 #   tsk-validate.sh unfreeze MNT               fsfreeze -u if frozen, disarm the timer
 #   tsk-validate.sh capture MNT OUT            Ground truth of MNT into OUT
@@ -43,7 +44,7 @@ cmd_tools() {
         # start, which it can't if it needs a newer glibc than the guest's.
         # 126 and above: not executable, not found, or killed by a signal.
         case ${t##*/} in
-        tsk-harness | capture-ground-truth) out=$("$t" --help 2>&1) ;;
+        tsk-harness | capture-ground-truth | tsk-corpus) out=$("$t" --help 2>&1) ;;
         *) out=$("$t" -V 2>&1) ;;
         esac
         st=$?
@@ -63,32 +64,86 @@ cmd_check_mount() {
     [[ $src == "$dev" ]] || die "$mnt is mounted from $src, not $dev"
 }
 
-# The starter corpus: a small, fixed tree that proves the path. The full Test
-# corpus replaces it (#19). Times are fixed; ctime and crtime can't be set.
+# The Test corpus (#19): generated afresh in MNT/corpus in each run, from the
+# generator's fixed seed. Its record (made and not-made features) goes to
+# standard output. SIZE is the size of /files/large.bin.
 cmd_corpus() {
-    local mnt=$1 c
-    c=$mnt/corpus
-    rm -rf "$c"
-    mkdir -p "$c/sub/deeper" "$c/empty-dir"
-    printf 'hello, world\n' >"$c/hello.txt"
-    : >"$c/empty"
-    # 200 KiB: more than one block, and not a whole number of them.
-    yes 'The Sleuth Kit starter corpus, line of text 0123456789' | head -c 204801 >"$c/blocks.bin"
-    printf 'nested\n' >"$c/sub/deeper/nested.txt"
-    printf 'a name with spaces\n' >"$c/name with spaces.txt"
-    printf 'UTF-8 name\n' >"$c/caf$(printf '\303\251').txt"
-    ln "$c/hello.txt" "$c/sub/hard-link"
-    ln -s hello.txt "$c/symlink"
-    ln -s ../hello.txt "$c/sub/relative-symlink"
-    printf 'private\n' >"$c/private"
-    chmod 0600 "$c/private"
-    chown 1000:1000 "$c/private"
-    chmod 0750 "$c/sub"
-    # Nanosecond mtimes, set children first so the directories keep theirs.
-    find "$c" -depth -exec touch -h -d '2021-02-03 04:05:06.123456789 UTC' {} +
-    touch -h -d '2001-09-09 01:46:40.5 UTC' "$c/symlink"
-    touch -d '2030-01-01 00:00:00.000000001 UTC' "$c/blocks.bin"
-    sync -f "$c"
+    local mnt=$1 size=$2 c=$1/corpus
+    rm -rf "$c" || die "could not remove the old corpus $c"
+    "$BIN/tsk-corpus" --large-size "$size" "$c"
+}
+
+# The magic of the directory block xfs_db printed, or nothing if the block is
+# unmapped (xfs_db then stays on the inode, whose core.magic doesn't count).
+xfs_block_magic() {
+    grep -v '^core\.' | sed -nE 's/^[^ ]*magic = (0x[0-9a-f]+)$/\1/p' | head -n1
+}
+
+# Checks with xfs_db that the corpus's directories and its extent B+tree file
+# really have the on-disk format each was made for. Run in the frozen window,
+# after flush, so the device holds the current metadata. One line per path:
+# "OK   /path format: detail" or "FAIL /path: ...". Not XFS: one SKIP line.
+cmd_corpus_formats() {
+    local mnt=$1 dev=$2 fstype info bs dirbs leafblk spec path want ino out
+    local fmt size next first leaf got detail rc=0
+    fstype=$(findmnt -no FSTYPE --mountpoint "$mnt") || die "nothing is mounted on $mnt"
+    if [[ $fstype != xfs ]]; then
+        echo "SKIP $mnt is $fstype: the formats are XFS formats"
+        return 0
+    fi
+    info=$(xfs_info "$mnt") || die "xfs_info $mnt failed"
+    bs=$(sed -nE 's/^data +=.* bsize=([0-9]+).*/\1/p' <<<"$info")
+    dirbs=$(sed -nE 's/^naming +=version 2 +bsize=([0-9]+).*/\1/p' <<<"$info")
+    [[ $bs =~ ^[0-9]+$ && $dirbs =~ ^[0-9]+$ ]] || die "cannot parse xfs_info $mnt: $info"
+    leafblk=$(((32 << 30) / bs)) # XFS_DIR2_LEAF_OFFSET, in file system blocks
+    for spec in "dirs/shortform shortform" "dirs/block block" "dirs/leaf leaf" \
+        "dirs/node node" "dirs/btree btree" "fragmented/extents.bin btree"; do
+        read -r path want <<<"$spec"
+        if ! ino=$(stat -c %i "$mnt/corpus/$path"); then
+            echo "FAIL /corpus/$path: missing"
+            rc=1
+            continue
+        fi
+        out=$(xfs_db -r -c "inode $ino" -c "print core.format core.size core.nextents" "$dev" 2>&1)
+        fmt=$(sed -nE 's/^core\.format = ([0-9]+).*/\1/p' <<<"$out")
+        size=$(sed -nE 's/^core\.size = ([0-9]+)$/\1/p' <<<"$out")
+        next=$(sed -nE 's/^core\.nextents = ([0-9]+)$/\1/p' <<<"$out")
+        first= leaf=
+        if [[ $path == dirs/* && $fmt == 2 ]]; then
+            first=$(xfs_db -r -c "inode $ino" -c "dblock 0" -c print "$dev" 2>/dev/null | xfs_block_magic)
+            leaf=$(xfs_db -r -c "inode $ino" -c "dblock $leafblk" -c print "$dev" 2>/dev/null | xfs_block_magic)
+            case $leaf in
+            0x3df1 | 0xd2f1) leaf=leaf ;; # XFS_DIR3_LEAF1_MAGIC, XFS_DIR2_LEAF1_MAGIC
+            0x3ebe | 0xfebe) leaf=node ;; # XFS_DA3_NODE_MAGIC, XFS_DA_NODE_MAGIC
+            '') ;;
+            *) leaf="magic $leaf" ;;
+            esac
+        fi
+        case $fmt in
+        1) got=shortform ;;
+        3) got=btree ;;
+        2)
+            # XDB3 (v5) or XD2B (v4): a block directory's single block.
+            if [[ $path == dirs/* && -z $leaf && $size == "$dirbs" &&
+                ($first == 0x58444233 || $first == 0x58443242) ]]; then
+                got=block
+            elif [[ -n $leaf ]]; then
+                got=$leaf
+            else
+                got=extents
+            fi
+            ;;
+        *) got="unknown format '${fmt}': $out" ;;
+        esac
+        detail="inode $ino, data fork format $fmt, size $size, $next extents${leaf:+, leaf offset: $leaf}"
+        if [[ $got == "$want" ]]; then
+            echo "OK   /corpus/$path $want: $detail"
+        else
+            echo "FAIL /corpus/$path: $got, not $want ($detail)"
+            rc=1
+        fi
+    done
+    return "$rc"
 }
 
 cmd_freeze() {
@@ -175,6 +230,7 @@ case $cmd in
 tools) cmd_tools ;;
 check-mount) cmd_check_mount "$@" ;;
 corpus) cmd_corpus "$@" ;;
+corpus-formats) cmd_corpus_formats "$@" ;;
 freeze) cmd_freeze "$@" ;;
 unfreeze) cmd_unfreeze "$@" ;;
 capture) cmd_capture "$@" ;;

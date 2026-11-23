@@ -54,7 +54,7 @@ A changed header is checked through every compiled C++ source that includes it, 
 
 ### Gate 1: comparison step self-test
 
-`build/vm-tools/manifest-selftest` checks the Manifest reader and writer and the comparison step on hand-made Manifests, the SHA-256 code, and Ground truth capture on a temporary directory tree. It needs no Validation VM. Each failed case is a failure of gate 1, named in the report. See [The self-test](#the-self-test).
+`build/vm-tools/manifest-selftest` checks the Manifest reader and writer and the comparison step on hand-made Manifests, the SHA-256 code, Ground truth capture on a temporary directory tree, and the Test corpus generator on corpora it writes to temporary directories. It needs no Validation VM. Each failed case is a failure of gate 1, named in the report. See [The self-test](#the-self-test).
 
 ### Gate 1: harness self-test
 
@@ -76,13 +76,14 @@ Until XFS support exists, `/data` and `/data-compat` are [Known failures](#known
 
 **The Strict check sequence**, per partition:
 
-1. Check that `/dev/sdaN` is mounted on the expected mount point. On the Control file system, recreate the starter corpus.
+1. Check that `/dev/sdaN` is mounted on the expected mount point. Then remove `<mount>/corpus` and generate the [Test corpus](#the-test-corpus) there afresh (step `corpus`).
 2. `sync`, arm the unfreeze timer, then `fsfreeze --freeze`.
 3. Capture Ground truth with `capture-ground-truth` (static), into `/root/tsk-validate/out/` on `/`.
 4. `blockdev --flushbufs /dev/sdaN` and `echo 3 > /proc/sys/vm/drop_caches`, so TSK reads the disk and not stale cache pages (#9).
-5. The Guest-side run: `tsk-harness /dev/sdaN` (static).
-6. The Host-side run, on the host: `tsk-harness --partition N <vm-dir>/tsk-xfs-alma9.vmdk` in a one-off container (below).
-7. `fsfreeze --unfreeze`.
+5. On XFS, check with `xfs_db` that the corpus's directories and its extent B+tree file have the on-disk formats they were made for (step `corpus-formats`; see [Checking the XFS formats](#checking-the-xfs-formats)).
+6. The Guest-side run: `tsk-harness /dev/sdaN` (static).
+7. The Host-side run, on the host: `tsk-harness --partition N <vm-dir>/tsk-xfs-alma9.vmdk` in a one-off container (below).
+8. `fsfreeze --unfreeze`.
 
 **The Host-side run's one-off container.** `collect-vm.sh` runs `docker run --rm --init --network none` of the devcontainer's own image (the image of the running devcontainer of this checkout, found by its `devcontainer.local_folder` label), as the host user, with three bind mounts at their host paths:
 
@@ -96,18 +97,18 @@ The devcontainer configuration (`.devcontainer/devcontainer.json`) has no VM mou
 
 **Unfreezing is guaranteed.** The file system is unfrozen after each sequence and on every other exit path: a failed step (including a freeze that half worked), a step that takes longer than `TSK_VALIDATE_STEP_TIMEOUT` seconds (default 600; `timeout` kills its `ssh`), and Ctrl-C or `kill` of the validate command, through `collect-vm.sh`'s `EXIT` trap. If the host can't reach the guest any more (the host side was killed with `SIGKILL`, or the network went away), a transient systemd timer in the guest, armed at each freeze (`tsk-validate-unfreeze-<mount>.timer`), unfreezes it after `TSK_VALIDATE_FREEZE_LIMIT` seconds (default 1800). Checked on 2026-11-23: with the frozen window held open by `TSK_VALIDATE_FROZEN_PAUSE`, `SIGINT` to the validate command's process group (what Ctrl-C sends) in the window of `/control`, and in another run of `/data`, made the command exit 130 with a partial report. A write to the file system succeeded right afterwards, and no unfreeze timer was left. When you try this yourself, don't probe the frozen file system with `timeout N touch ...` first: a write to a frozen file system can't be killed, so `timeout` returns only after the unfreeze.
 
-**The starter corpus**, a first, small stand-in for the **Test corpus**: a fixed tree in `/control/corpus`, recreated by `guest/tsk-validate.sh corpus` in each run: nested directories, an empty directory, an empty file, a 200 KiB file, a hard link, short relative symlinks, names with spaces and UTF-8, an owner and mode other than root's `0644`, and fixed mtimes with nanoseconds. It proves the path; the full Test corpus replaces it in #19. It avoids the ext4 defects already known from the harness self-test (pre-1970 times, symlinks of 60 bytes or more), which #19 brings in as Known failures.
+**The Test corpus** is generated afresh on each of the three partitions in each run, before the freeze. See [The Test corpus](#the-test-corpus).
 
 **Test-only hooks** (environment variables of the validate command, passed to `collect-vm.sh`):
 
-- `TSK_VALIDATE_BREAK=PART:PATH`, for example `sda6:/corpus/hello.txt`: after Ground truth is captured, flip one byte of that file's first block directly on `/dev/PART`, and put it back after the Host-side run (also on failures and interrupts). Both runs read the changed byte, so both the Guest side and the Host side of gate 3 must then fail and name the entry and the field: `/corpus/hello.txt` and `sha256` (twice: `/corpus/sub/hard-link` is the same file).
+- `TSK_VALIDATE_BREAK=PART:PATH`, for example `sda6:/corpus/links/target.txt`: after Ground truth is captured, flip one byte of that file's first block directly on `/dev/PART`, and put it back after the Host-side run (also on failures and interrupts). Both runs read the changed byte, so both the Guest side and the Host side of gate 3 must then fail and name the entry and the field: `/corpus/links/target.txt` and `sha256` (three times: `/corpus/links/hard-1` and `/corpus/links/sub/hard-2` are the same file).
 - `TSK_VALIDATE_FROZEN_PAUSE=N`: wait N seconds in each frozen window, to interrupt the command there.
 - `TSK_VALIDATE_IMAGE=IMAGE`: run the Host-side runs in one-off containers of IMAGE instead of the running devcontainer's image.
 
 **Reading gate 3 in the report.** The gate has one check for the VM and two per partition, Guest side and Host side:
 
 - `Validation VM and the static guest tools`: what happened to the VM (started, already running, stopped, left running), the image of the Host-side runs' one-off containers (or why there are none), and one note per static tool that started in the guest. It fails if the collection couldn't run, for example no VM, a failed static guest build, or a run inside the devcontainer.
-- `Strict check, Guest side: <mount> (<partition>)`: a failed step of the sequence is a failure naming the step. Then the comparison's findings: each difference is a `failure:` naming the encoded path, the field and both values, then a summary note with the counts, then one `Known failure:` note per tolerated Known failure with its comment from the list. A stale Known failure (listed, but the difference is gone) is a failure. The full per-entry comparison, each step's output and the step timings are in the check's log (`logs/gate3-strict-guest-sdaN.log`). The Manifests are in `vm/strict-guest/sdaN/`.
+- `Strict check, Guest side: <mount> (<partition>)`: a failed step of the sequence is a failure naming the step. The Test corpus generator's record: one note listing the features it made, and one note per feature it couldn't make on this file system, with the reason (for example `not made here: reflinks: FICLONE: Operation not supported; plain copies instead`). On XFS, one note per path checked by `corpus-formats` with its format, inode, size and extent count, or a failure if a path doesn't have the format it was made for. Then the comparison's findings: each difference is a `failure:` naming the encoded path, the field and both values, then a summary note with the counts, then one `Known failure:` note per tolerated Known failure with its comment from the list. A stale Known failure (listed, but the difference is gone) is a failure. The full per-entry comparison, each step's output and the step timings are in the check's log (`logs/gate3-strict-guest-sdaN.log`). The Manifests are in `vm/strict-guest/sdaN/`.
 - `Strict check, Host side: <mount> (<partition>), .vmdk`: one note per refused write in the one-off container (`write refused, <path>: Read-only file system`), a failure for a writable path or a failed Host-side run (no Docker, no devcontainer image, a failed `host-build.sh`: see `logs/vm-host-build.log`), then the comparison's findings, as for the Guest side, against the same Ground truth. The steps the two runs share (freeze, capture, unfreeze) are reported by the Guest side only. Log: `logs/gate3-strict-host-sdaN.log`; the Manifest: `vm/strict-host/sdaN/host.manifest`.
 
 ### Gate 5: format and lint
@@ -159,11 +160,11 @@ The code is C++14 and has no dependency on libtsk or any other language runtime.
 | `compare.h`, `compare.cpp` | The comparison step: `compare_manifests`, the Known failure and Volatile path list readers, the report |
 | `compare_cli.h`, `compare_cli.cpp`, `compare_main.cpp` | The `compare-manifests` command |
 | `selftest.cpp`, `sha256_selftest.cpp` | The self-test (CppUnit), run in gate 1 |
-| `manifest.mk` | Plain GNU make file that builds all of it, and the [harness and Ground truth capture](#the-harness-and-ground-truth-capture), into `build/vm-tools/` |
+| `manifest.mk` | Plain GNU make file that builds all of it, the [harness and Ground truth capture](#the-harness-and-ground-truth-capture) and the [Test corpus generator](#the-test-corpus), into `build/vm-tools/` |
 
 ```sh
 make -f test/vm/manifest/manifest.mk          # libtskmanifest.a, compare-manifests, capture-ground-truth,
-                                              # tsk-harness and the self-tests (build the library first)
+                                              # tsk-harness, tsk-corpus and the self-tests (build the library first)
 make -f test/vm/manifest/manifest.mk check    # ... and run the self-tests
 ```
 
@@ -272,7 +273,7 @@ strict-guest   sda6       *                crtime          the same for every en
 - The rest of the line is a free-text comment that is shown in the report. Say why the failure is expected and which issue fixes it.
 - Blank lines and lines starting with `#` are skipped. A duplicate line or an unknown difference is an error (exit status 2).
 
-The committed list is `test/vm/known-failures.txt`. It records `/data` (`sda4`) and `/data-compat` (`sda5`) as `* error:fs-open` for `strict-guest` and `strict-host`: no XFS support yet. `/boot` and `/` get their lines with the Best-effort check (#21), the only check that reads them.
+The committed list is `test/vm/known-failures.txt`. It records `/data` (`sda4`) and `/data-compat` (`sda5`) as `* error:fs-open` for `strict-guest` and `strict-host`: no XFS support yet. On the Control file system (`sda6`), it records the libtsk ext4 defects the [Test corpus](#the-test-corpus) exposes, path by path, on both sides: times before 1970 and after 2106 (#30), slow symlinks with no target (#31), and three phantom names in the 50,000-entry directory (#32). The phantom names are bytes of the directory's htree index: name hashes (seeded per file system) and logical block numbers, both the same in every run on this file system. Two runs gave the same three names. `/boot` and `/` get their lines with the Best-effort check (#21), the only check that reads them.
 
 ### Volatile path list
 
@@ -288,9 +289,10 @@ A text file with one encoded path per line, relative to the file system root. Bl
 - Known failures: a listed difference is tolerated; a listed one that now passes fails; lines for other checks or partitions are ignored; `*` subjects; whole-run errors ("file system not recognised") tolerated, stale or with another code; list parsing;
 - the `compare-manifests` command: exit statuses, report, items and their cap, and usage and input errors.
 
-The same binary, `manifest-selftest`, also links `sha256_selftest.cpp` and `../capture/capture_selftest.cpp`:
+The same binary, `manifest-selftest`, also links `sha256_selftest.cpp`, `../capture/capture_selftest.cpp` and `../corpus/corpus_selftest.cpp`:
 
 - SHA-256: the FIPS 180-4 examples, lengths around the padding boundaries, all byte values, and the same data fed in pieces of different sizes;
+- the [Test corpus generator](#the-test-corpus), see [Its self-test](#its-self-test);
 - Ground truth capture, on a tree built in a temporary directory: each entry type, hard links, symlinks that are recorded but not followed (including 300-byte and non-UTF-8 targets), odd names, nanosecond and pre-1970 timestamps, permission bits, crtime when `statx` reports a birth time, walk order, an unreadable file, a missing root, a round trip of the whole tree through the writer and reader, and the command's exit statuses.
 
 Gate 1 runs it. A failing case fails gate 1 and is named in the report.
@@ -386,6 +388,93 @@ How the harness was checked against what went into the image (step 5, run on 202
 
 Without `-fno-strict-aliasing` (above), every run of step 4 crashes in `tsk_fs_open_img`.
 
+## The Test corpus
+
+The **Test corpus** is the tree the Strict checks compare: 51,069 entries meant to exercise every on-disk format variant. `tsk-corpus`, a C++14 program in `test/vm/corpus/`, generates it from a fixed seed (`0x75b0c0de`). In each run of the validate command, `guest/tsk-validate.sh corpus` removes `<mount>/corpus` and generates it again, on `/data`, `/data-compat` and the Control file system `/control`, before the freeze (step 1 of [the Strict check sequence](#gate-3-strict-checks)).
+
+| Path under `/corpus` | What it covers |
+| --- | --- |
+| `dirs/shortform`, `dirs/block`, `dirs/leaf` | Directories of 3, 40 and 300 small files. With 4 KiB directory blocks (both XFS partitions) they are a short-form directory (entries in the inode), a block directory (one directory block) and a leaf directory (several data blocks and one leaf block) |
+| `dirs/node` | Node directory (more entries than the ~500 one leaf block holds): 600 hard links to the 50 files of `dirs/link-targets`. Its blocks must stay within 12 extents, all the inode holds as a list on the Validation VM, where the SELinux label's attribute fork takes the rest. With 2,000 new files, the files' inode chunks and data blocks interleaved with the directory's blocks and it had 24 extents; with 1,000 hard links, 13 on `/data`. Both made it a B+tree directory. Hard links allocate nothing but the directory's own blocks, and 600 entries need about 9 of them |
+| `dirs/btree` | B+tree directory: 50,000 entries with names of 14 to 46 bytes, hard links to the files of `dirs/link-targets`. Hard links keep it to 50 inodes: an ext4 file system of 1 GiB has only 65,536 |
+| `fragmented/extents.bin` | 2,000 data extents of 4 KiB, each followed by a 4 KiB hole: an extent B+tree on XFS (an inode's data fork holds 21 extents with 512-byte inodes, 53 with 1 KiB inodes). Holes keep every extent separate whatever the allocator does |
+| `sparse/holes.bin`, `sparse/only-hole.bin` | 384 KiB with holes at the start, in the middle and at the end; 1 MiB of nothing but a hole |
+| `files/empty`, `small.txt`, `multiblock.bin` | 0, 13 and 14,459 bytes (3.5 blocks of 4 KiB) |
+| `files/large.bin` | The large file: 1 GiB on `/data`, 512 MiB on `/data-compat`, 256 MiB on `/control` (`corpus_large_size` in `lib/vm_checks.sh`) |
+| `files/preallocated.bin` | 1 MiB allocated with `fallocate` and never written: unwritten extents, read as zeros |
+| `reflink/clone.bin`, `reflink/partial.bin` | Reflinked copies of `reflink/source.bin` (1 MiB): whole, and with 4 KiB in the middle overwritten. Where the file system has no reflinks, plain copies with the same content |
+| `links/` | A file with 3 hard links (`target.txt`, `hard-1`, `sub/hard-2`); symlinks with targets of 10 bytes (`short-symlink`), 300 bytes (`long-symlink-300`) and 1,023 bytes (`max-symlink-1023`, the longest XFS stores: `XFS_SYMLINK_MAXLEN`, 1,024, counts the terminating NUL), relative, absolute, dangling and to a directory |
+| `names/` | UTF-8 names (2-, 3- and 4-byte sequences), names with spaces, a tab, a newline, `%` and a leading `-`, two files and a directory with 255-byte names (one of 85 three-byte UTF-8 characters) |
+| `times/before-1970/`, `times/`, `times/after-2038/` | mtime and atime from 1901-12-13 (the 32-bit minimum) to 1969-12-31T23:59:59.999999999; the epoch and the last second of 32-bit time; 2038-01-19T03:14:08, 2100, 2262 (past 64-bit nanoseconds), 2446-05-10T22:38:55 (ext4's maximum) and 2486-07-02T20:20:24 (XFS bigtime's maximum, as the kernel clamps it) |
+| `special/` | A FIFO, a socket, a character device and a block device |
+| `owners/` | uid and gid 1000, 65534 and 100; setuid, setgid, sticky and mode `0000` |
+| `empty-dir` | An empty directory |
+
+Every file's content is derived from the seed and its path (xoshiro256\*\*, seeded with splitmix64), and every entry gets a seeded mtime and atime with nanoseconds, so two runs on an empty target give the same tree, content, modes, owners, mtimes and atimes. Only what the kernel chooses can differ: inode numbers, ctime, crtime and the physical layout.
+
+### The record
+
+The generator adapts to the file system and prints a record, one line per feature: `made`, `not-made` with the reason, or `failed` (the generator stopped; the step fails). Where it can, it makes the nearest thing instead, so the paths stay the same on every partition: plain copies instead of reflinks, and a timestamp the file system can't store is stored as the kernel clamps it. The record is the `corpus` step's log (`vm/strict-guest/sdaN/corpus.log` in the run directory), and gate 3 reports it (see [Gate 3: Strict checks](#gate-3-strict-checks)). On the Validation VM:
+
+| Feature | `/data` (sda4) | `/data-compat` (sda5) | `/control` (sda6, ext4) |
+| --- | --- | --- | --- |
+| Reflinks | made | not made: `FICLONE: Operation not supported` (reflink off); plain copies | not made: the same |
+| Timestamps after 2038 | made, up to 2486-07-02T20:20:24 | not made: each clamped to 2038-01-19T03:14:07 (no bigtime) | made up to 2446-05-10T22:38:55; 2486-07-02T20:20:24 clamped to that |
+| Every other feature | made | made | made |
+| Size of `files/large.bin` | 1 GiB | 512 MiB | 256 MiB |
+| Space used after generation | 1.1 GiB of 4 GiB (28%) | 546 MiB of 2 GiB (28%) | 273 MiB of 974 MiB (31%); 479 of 65,536 inodes |
+
+The generator takes 1 to 6 seconds per partition, and each Ground truth capture of a corpus 2 to 5 seconds.
+
+### Checking the XFS formats
+
+The format each XFS directory and the extent B+tree file has is checked in every run, inside the frozen window after the caches are flushed, so the device holds the current metadata (`tsk-validate.sh corpus-formats MNT DEV`, step 5 of the sequence). For each path it looks up the inode with `stat`, then reads it with `xfs_db -r`:
+
+- `print core.format core.size core.nextents` on the inode: the data fork format is `local` (1) for short-form, `btree` (3) for `dirs/btree` and `fragmented/extents.bin`, `extents` (2) for the others.
+- For an `extents` directory, `dblock 0` and `dblock <32 GiB in file system blocks>` (`XFS_DIR2_LEAF_OFFSET`), then `print`: a block directory has one block of the directory block size whose magic is `XDB3` (v5) or `XD2B` (v4) and nothing at the leaf offset. A leaf directory has a leaf1 block there (magic `0x3df1`, v4 `0xd2f1`), a node directory a da-btree node (`0x3ebe`, v4 `0xfebe`).
+
+A path without its format fails gate 3. On ext4 the step prints one `SKIP` line. Result on the Validation VM (2026-11-23), `/data`:
+
+| Path | Format | Inode data fork | Size | Extents |
+| --- | --- | --- | --- | --- |
+| `dirs/shortform` | short-form | `local` | 39 | 0 |
+| `dirs/block` | block | `extents` | 4,096 | 1 |
+| `dirs/leaf` | leaf | `extents`, leaf1 block at the leaf offset | 12,288 | 4 |
+| `dirs/node` | node | `extents`, da-btree node at the leaf offset | 20,480 | 9 |
+| `dirs/btree` | B+tree | `btree` | 2,322,432 | 220 |
+| `fragmented/extents.bin` | extent B+tree | `btree` | 16,379,904 | 2,000 |
+
+`/data-compat` has the same formats (leaf 3 extents, node 5, B+tree directory 222). The extent counts vary a little from run to run with the physical layout; the formats don't.
+
+### Regenerating it
+
+The validate command regenerates the corpus in every run. To regenerate it by hand in the guest, after a validate run has copied the static guest build to `/root/tsk-validate`:
+
+```sh
+test/vm/vm.sh ssh /root/tsk-validate/tsk-validate.sh corpus /data 1G
+```
+
+or, with the generator directly, into any empty or new directory:
+
+```sh
+tsk-corpus [--seed N] --large-size SIZE [--btree-entries N] DIR   # SIZE in bytes, or with K, M or G
+```
+
+Exit status: `0` complete, `1` the generator failed (see the record's `failed` line), `2` bad usage or `DIR` not empty. The generator needs only glibc and the C++ standard library; `manifest.mk` builds it as `build/vm-tools/tsk-corpus`, and its `corpus-static` target builds the static copy the guest uses.
+
+### How determinism was checked
+
+On the Validation VM (2026-11-23), the final generator ran twice on each partition. Each run went into an emptied `<mount>/corpus` and was followed by a Ground truth capture of it. In each pair of Manifests, the same 51,070 paths have the same type, mode, uid, gid, size, link count, symlink target, SHA-256, mtime and atime. Only inode numbers (on XFS; ext4 handed out the same ones), ctime and crtime differ, which the generator can't set. Both runs also printed the same record. The self-test checks the same property in gate 1 on every run.
+
+### Its self-test
+
+`corpus_selftest.cpp`, linked into `manifest-selftest` and run in gate 1, generates the corpus (with a 3 MiB large file and 1,500 B+tree directory entries) into temporary directories and checks it through the kernel and Ground truth capture, not through the generator's code:
+
+- two runs give Manifests that are equal in every compared field except inode, ctime and crtime, and the same record; another seed gives other content;
+- the PRNG's first output for seed 0 is pinned to the xoshiro256\*\* reference value, because changing the stream changes every corpus;
+- the directory entry counts, the 50 inodes behind the node and B+tree directories and their link counts, the sizes, the holes (`SEEK_DATA`/`SEEK_HOLE`), the 2,000 extents, the reflinked or copied content, the links and symlink lengths, the 255-byte names, the timestamps, the modes, and that every entry has a seeded mtime;
+- the record has each feature exactly once, made or not made with a reason (as an ordinary user: device files and owners not made, `Operation not permitted`), and a non-empty target, a missing parent and bad options are refused.
+
 ## The static guest build
 
 The Validation VM runs AlmaLinux 9 (glibc 2.34), older than the devcontainer's glibc, so the tools that run in the guest are linked fully statically. `test/vm/guest-build.sh` (devcontainer; `--fresh` starts over) builds them:
@@ -393,7 +482,7 @@ The Validation VM runs AlmaLinux 9 (glibc 2.34), older than the devcontainer's g
 1. A copy of the working tree in `build/guest-static/src`: every tracked file and every untracked file `.gitignore` doesn't exclude (`test/vm/lib/sync_tree.py`). Only files whose content changed are copied, and a copied file gets the current time as its modification time (not the source's, which may be older than the objects built from the previous version), so later builds are incremental and still rebuild what changed. Files removed from the tree are removed from the copy.
 2. `./bootstrap` and `./configure --disable-shared --enable-static --disable-java --without-afflib --without-libewf --without-libvhdi --without-libvmdk --without-libbfio --without-libvslvm` with `-g -O2 -fno-strict-aliasing`, on the first build only.
 3. `make -C tsk`, then `fls`, `icat`, `fsstat` and `istat` with `LDFLAGS=-all-static`, which makes libtool link glibc and libstdc++ statically too.
-4. `tsk-harness` and `capture-ground-truth` with `manifest.mk`'s `harness-static` and `capture-static` targets (output in `build/guest-static/vm-tools/static/`). The harness is compiled against a staged install of this static library, like the normal harness, and linked with `-static` and the `-l` flags of `libtsk.la`'s `dependency_libs`.
+4. `tsk-harness`, `capture-ground-truth` and `tsk-corpus` with `manifest.mk`'s `harness-static`, `capture-static` and `corpus-static` targets (output in `build/guest-static/vm-tools/static/`). The harness is compiled against a staged install of this static library, like the normal harness, and linked with `-static` and the `-l` flags of `libtsk.la`'s `dependency_libs`.
 5. Stripped copies in `build/guest-static/bin`, each checked to be statically linked. The directory is emptied first, so a failed build never leaves old binaries for the guest.
 
 On the host, the validate command runs it before collecting the VM's results; gate 1's `Static guest build` check runs it again (an incremental no-op then) and reports the result. Gate 3's VM check shows that each binary starts in the guest.
@@ -587,7 +676,7 @@ The Validation VM's disk has no v4 file system. The [XFS fixture images](#xfs-fi
 | `kickstart/ks.cfg.in` | installer | Kickstart template |
 | `guest/verify-layout.sh` | guest | Layout and file-system checks, sent by `verify-vm.sh` |
 | `collect-vm.sh` | host | Collects the VM's results for gate 3: VM start and stop, the Strict check sequence, the Host-side runs' one-off containers |
-| `guest/tsk-validate.sh` | guest | One step of the Strict check sequence per call (freeze, capture, flush, run, unfreeze, starter corpus, test hooks), copied by `collect-vm.sh` |
+| `guest/tsk-validate.sh` | guest | One step of the Strict check sequence per call (Test corpus, freeze, capture, flush, XFS formats, run, unfreeze, test hooks), copied by `collect-vm.sh` |
 | `guest-build.sh` | devcontainer | The [static guest build](#the-static-guest-build) |
 | `host-build.sh` | devcontainer | The normal build's library and `tsk-harness`, for the Host-side runs |
 | `host-run.sh` | one-off container | The Host-side run: read-only probe, then the harness on the `.vmdk`; started by `collect-vm.sh` |

@@ -42,6 +42,44 @@ gate3_vm() {
     fi
 }
 
+# The Test corpus generator's record (test/vm/corpus/): one note listing what
+# it made, one per feature it couldn't make on this file system, with the
+# reason. The full record is in the check's log.
+gate3_corpus_record() {
+    local mnt=$1 part=$2 log=$3 rc=$4 kind feature detail made= ok=1
+    while IFS=$'\t' read -r kind feature detail; do
+        case $kind in
+        made) made+=${made:+, }$feature ;;
+        not-made) item_note "$mnt ($part): Test corpus: not made here: $feature: $detail" ;;
+        failed) item_fail "$mnt ($part): the Test corpus generator failed: $detail"; ok= ;;
+        esac
+    done <"$log"
+    [[ -n $made ]] && item_note "$mnt ($part): Test corpus: made $made"
+    if ((rc != 0)) && [[ -n $ok ]]; then
+        item_fail "$mnt ($part): step corpus failed (exit $rc): $(tail -n1 "$log")"
+        ok=
+    fi
+    [[ -n $ok ]]
+}
+
+# The corpus's XFS formats, checked with xfs_db in the frozen window: one
+# note per path with its format, a failure for a path without the format it
+# was made for. Nothing for a file system that isn't XFS.
+gate3_corpus_formats() {
+    local mnt=$1 part=$2 log=$3 rc=$4 line failed=
+    while IFS= read -r line; do
+        case $line in
+        'OK   '*) item_note "$mnt ($part): XFS format: ${line#OK   }" ;;
+        'FAIL '*) item_fail "$mnt ($part): XFS format: ${line#FAIL }"; failed=1 ;;
+        esac
+    done <"$log"
+    if ((rc != 0)) && [[ -z $failed ]]; then
+        item_fail "$mnt ($part): step corpus-formats failed (exit $rc): $(tail -n1 "$log")"
+        failed=1
+    fi
+    [[ -z $failed ]]
+}
+
 # Strict check, Guest side, of one partition: the steps of the Strict check
 # sequence, then the comparison of the Guest-side run with Ground truth.
 gate3_strict_guest() {
@@ -56,13 +94,15 @@ gate3_strict_guest() {
         echo "== $name.log"
         cat "$dir/$name.log"
         case $name:$rc in
+        corpus:*) gate3_corpus_record "$mnt" "$part" "$dir/$name.log" "$rc" || ok= ;;
+        corpus-formats:*) gate3_corpus_formats "$mnt" "$part" "$dir/$name.log" "$rc" || ok= ;;
         *:0) ;;
         run:1) ;; # an incomplete or failed run: the comparison reports it
         capture:1) item_fail "$mnt ($part): Ground truth is incomplete (capture-ground-truth exit 1): $(head -n1 "$dir/$name.log")"; ok= ;;
         *) item_fail "$mnt ($part): step $name failed (exit $rc): $(tail -n1 "$dir/$name.log")"; ok= ;;
         esac
     done <"$dir/steps.tsv"
-    for name in check-mount freeze capture flush run unfreeze; do
+    for name in check-mount corpus freeze capture flush corpus-formats run unfreeze; do
         grep -q "^$name"$'\t' "$dir/steps.tsv" && continue
         item_fail "$mnt ($part): step $name did not run"
         ok=

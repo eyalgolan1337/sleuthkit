@@ -1,6 +1,7 @@
 # Builds the validation setup's C++ tools: the Manifest library, the
 # comparison step, Ground truth capture (test/vm/capture/), the harness
-# (test/vm/harness/) and their self-tests (test/vm/README.md, "Manifests and
+# (test/vm/harness/), the Test corpus generator (test/vm/corpus/) and their
+# self-tests (test/vm/README.md, "Manifests and
 # the comparison step", "The harness and Ground truth capture"). Plain GNU
 # make, not part of the autotools build. Run it from the repository root,
 # after building the library (make), which the harness links:
@@ -9,6 +10,7 @@
 #   make -f test/vm/manifest/manifest.mk check           # ... and run the self-tests
 #   make -f test/vm/manifest/manifest.mk capture-static  # statically linked capture
 #   make -f test/vm/manifest/manifest.mk harness-static  # statically linked harness
+#   make -f test/vm/manifest/manifest.mk corpus-static   # statically linked generator
 #                                         # (in a tree configured --disable-shared)
 #   make -f test/vm/manifest/manifest.mk clean
 #
@@ -17,6 +19,7 @@
 SRC_DIR := $(patsubst %/,%,$(dir $(lastword $(MAKEFILE_LIST))))
 CAPTURE_DIR := $(SRC_DIR)/../capture
 HARNESS_DIR := $(SRC_DIR)/../harness
+CORPUS_DIR := $(SRC_DIR)/../corpus
 BUILD_DIR ?= build/vm-tools
 
 CXX ?= g++
@@ -34,9 +37,10 @@ SELFTEST := $(BUILD_DIR)/manifest-selftest
 CAPTURE := $(BUILD_DIR)/capture-ground-truth
 HARNESS := $(BUILD_DIR)/tsk-harness
 HARNESS_SELFTEST := $(BUILD_DIR)/harness-selftest
+CORPUS := $(BUILD_DIR)/tsk-corpus
 
-.PHONY: all check clean capture-static harness-static
-all: $(LIB) $(COMPARE) $(SELFTEST) $(CAPTURE) $(HARNESS) $(HARNESS_SELFTEST)
+.PHONY: all check clean capture-static harness-static corpus-static
+all: $(LIB) $(COMPARE) $(SELFTEST) $(CAPTURE) $(HARNESS) $(HARNESS_SELFTEST) $(CORPUS)
 
 check: $(SELFTEST) $(HARNESS_SELFTEST)
 	$(SELFTEST)
@@ -59,6 +63,12 @@ $(BUILD_DIR)/%.o: $(SRC_DIR)/%.cpp | $(BUILD_DIR) $(DEP_DIR)
 $(BUILD_DIR)/%.o: $(CAPTURE_DIR)/%.cpp | $(BUILD_DIR) $(DEP_DIR)
 	$(COMPILE)
 $(BUILD_DIR)/capture.o $(BUILD_DIR)/capture_main.o $(BUILD_DIR)/capture_selftest.o: CPPFLAGS += -I$(abspath $(SRC_DIR))
+
+# The Test corpus generator (test/vm/corpus/). Its self-test checks the
+# corpus through Ground truth capture, so it sees both directories.
+$(BUILD_DIR)/%.o: $(CORPUS_DIR)/%.cpp | $(BUILD_DIR) $(DEP_DIR)
+	$(COMPILE)
+$(BUILD_DIR)/corpus_selftest.o: CPPFLAGS += -I$(abspath $(SRC_DIR)) -I$(abspath $(CAPTURE_DIR))
 
 # The harness (test/vm/harness/) may use only the public libtsk API, so it is
 # compiled against a staged install of the library (make install with
@@ -101,9 +111,9 @@ $(COMPARE): $(BUILD_DIR)/compare_main.o $(LIB)
 	$(CXX) $(CXXFLAGS) $(LDFLAGS) -o $@ $^
 
 SELFTEST_OBJS := $(BUILD_DIR)/selftest.o $(BUILD_DIR)/sha256_selftest.o \
-    $(BUILD_DIR)/capture_selftest.o
+    $(BUILD_DIR)/capture_selftest.o $(BUILD_DIR)/corpus_selftest.o
 $(SELFTEST_OBJS): CPPFLAGS += $(CPPUNIT_CFLAGS)
-$(SELFTEST): $(SELFTEST_OBJS) $(BUILD_DIR)/capture.o $(LIB)
+$(SELFTEST): $(SELFTEST_OBJS) $(BUILD_DIR)/capture.o $(BUILD_DIR)/corpus.o $(LIB)
 	$(CXX) $(CXXFLAGS) $(LDFLAGS) -o $@ $^ $(CPPUNIT_LIBS)
 
 $(CAPTURE): $(BUILD_DIR)/capture_main.o $(BUILD_DIR)/capture.o $(LIB)
@@ -115,6 +125,16 @@ $(CAPTURE): $(BUILD_DIR)/capture_main.o $(BUILD_DIR)/capture.o $(LIB)
 CAPTURE_STATIC := $(BUILD_DIR)/static/capture-ground-truth
 capture-static: $(CAPTURE_STATIC)
 $(CAPTURE_STATIC): $(BUILD_DIR)/capture_main.o $(BUILD_DIR)/capture.o $(LIB)
+	mkdir -p $(@D)
+	$(CXX) $(CXXFLAGS) $(LDFLAGS) -static -o $@ $^
+
+$(CORPUS): $(BUILD_DIR)/corpus_main.o $(BUILD_DIR)/corpus.o
+	$(CXX) $(CXXFLAGS) $(LDFLAGS) -o $@ $^
+
+# The generator runs in the guest too: fully static, like capture-static.
+CORPUS_STATIC := $(BUILD_DIR)/static/tsk-corpus
+corpus-static: $(CORPUS_STATIC)
+$(CORPUS_STATIC): $(BUILD_DIR)/corpus_main.o $(BUILD_DIR)/corpus.o
 	mkdir -p $(@D)
 	$(CXX) $(CXXFLAGS) $(LDFLAGS) -static -o $@ $^
 
@@ -143,7 +163,7 @@ $(BUILD_DIR) $(DEP_DIR):
 clean:
 	rm -f $(BUILD_DIR)/*.o $(DEP_DIR)/*.Po $(LIB) $(COMPARE) $(SELFTEST) $(CAPTURE) \
 	    $(HARNESS) $(HARNESS_SELFTEST) $(TSK_STAGE_STAMP) $(CAPTURE_STATIC) \
-	    $(HARNESS_STATIC)
+	    $(HARNESS_STATIC) $(CORPUS) $(CORPUS_STATIC)
 	rm -rf $(TSK_STAGE)
 
 -include $(wildcard $(DEP_DIR)/*.Po)

@@ -8,11 +8,11 @@
 #
 # It starts the Validation VM if it isn't running, copies the static guest
 # build to it, and for each Strict check partition runs the Strict check
-# sequence: sync and freeze, capture Ground truth, flush the block-device cache
-# and drop page caches, the Guest-side run on /dev/sdN, the Host-side run on
-# the .vmdk, unfreeze. Results go to RUN_DIR/vm/ for gate 3, which compares
-# them in the devcontainer. Then it stops the VM, unless --keep-running is
-# given.
+# sequence: generate the Test corpus, sync and freeze, capture Ground truth,
+# flush the block-device cache and drop page caches, check the corpus's XFS
+# formats, the Guest-side run on /dev/sdN, the Host-side run on the .vmdk,
+# unfreeze. Results go to RUN_DIR/vm/ for gate 3, which compares them in the
+# devcontainer. Then it stops the VM, unless --keep-running is given.
 #
 # The Host-side run uses the harness of the normal devcontainer build
 # (build/vm-tools/tsk-harness; test/vm/host-build.sh builds it) in a one-off
@@ -32,7 +32,7 @@
 # Test-only hooks (environment):
 #   TSK_VALIDATE_BREAK=PART:PATH   after Ground truth, flip one byte of the file
 #                                  PATH on PART's device, and put it back after
-#                                  the Host-side run (e.g. sda6:/corpus/hello.txt)
+#                                  the Host-side run (e.g. sda6:/corpus/links/target.txt)
 #   TSK_VALIDATE_FROZEN_PAUSE=N    wait N seconds in each frozen window
 # Limits (seconds): TSK_VALIDATE_STEP_TIMEOUT (600) per guest step and per
 # Host-side run,
@@ -239,9 +239,7 @@ strict_check() {
     [[ $BREAK == "$part":* ]] && break_path=${BREAK#*:}
 
     step "$dir" check-mount "$dev" "$mnt" || return 0
-    if [[ $part == "$CONTROL_PARTITION" ]]; then
-        step "$dir" corpus "$mnt" || return 0
-    fi
+    step "$dir" corpus "$mnt" "$(corpus_large_size "$part")" || return 0
     gssh "$STEP_TIMEOUT" sh -c "rm -rf $gout && mkdir -p $gout" || return 0
     if [[ -n $break_path ]]; then
         step "$dir" break-locate "$mnt" "$dev" "$break_path" || return 0
@@ -260,6 +258,7 @@ strict_check() {
             step "$dir" break
         fi
         if step "$dir" flush "$dev"; then
+            step "$dir" corpus-formats "$mnt" "$dev"
             step "$dir" run "$dev" "$gout/guest.manifest"
         fi
         host_run "$part"
