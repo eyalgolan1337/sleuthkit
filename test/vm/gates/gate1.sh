@@ -104,6 +104,37 @@ gate1_guest_build() {
     item_note "built fls, icat, fsstat, istat, tsk-harness, capture-ground-truth and tsk-corpus, statically linked, in build/guest-static/bin"
 }
 
+# The Known failure list as a whole. Each comparison of gates 3 and 4 reads
+# only its own lines, so a line no comparison reads (a misspelled check, a
+# partition no longer checked) could never be found stale: it fails here.
+gate1_known_failures() {
+    # shellcheck source=../lib/vm_checks.sh
+    source "$VALIDATE_LIB/vm_checks.sh"
+    if ! make -s -j"$JOBS" -f test/vm/manifest/manifest.mk build/vm-tools/compare-manifests; then
+        item_fail "could not build compare-manifests; see the log"
+        return 1
+    fi
+    build/vm-tools/compare-manifests --lint-known-failures "$KNOWN_FAILURES" \
+        --comparisons "$(vm_comparisons)" --items "$VALIDATE_ITEMS"
+}
+
+# The committed XFS fixture images (test/vm/fixtures/xfs/): each image must
+# still match its expected Manifest under the comparison step's Strict rules.
+gate1_xfs_fixtures() {
+    local out rc=0 line
+    out=$(test/vm/fixtures/xfs/xfs-fixtures.py verify 2>&1) || rc=$?
+    printf '%s\n' "$out"
+    if ((rc == 0)); then
+        item_note "$(tail -n1 <<<"$out")"
+        return 0
+    fi
+    while IFS= read -r line; do
+        item_fail "${line#FAIL: }"
+    done < <(grep '^FAIL: ' <<<"$out")
+    grep -q '^FAIL: ' <<<"$out" || item_fail "xfs-fixtures.py verify exited with status $rc; see the log"
+    return 1
+}
+
 gate_1() {
     gate_begin 1 "Build, C++17/C++20 syntax and self-tests"
     run_check build "Build (configure if needed, make, check programs, compile_commands.json)" gate1_build
@@ -112,5 +143,7 @@ gate_1() {
     run_check cxx20 "C++20 syntax-only compile of changed C++ files" gate1_cxx_std c++20
     run_check manifest-selftest "Comparison step and Ground truth capture self-test" gate1_manifest_selftest
     run_check harness-selftest "Harness self-test (ext4 image: raw, offset, .vmdk, Ground truth)" gate1_harness_selftest
+    run_check known-failures "Known failure list: every line belongs to a comparison of gates 3 and 4" gate1_known_failures
+    run_check xfs-fixtures "XFS fixture images match their expected Manifests" gate1_xfs_fixtures
     gate_end
 }

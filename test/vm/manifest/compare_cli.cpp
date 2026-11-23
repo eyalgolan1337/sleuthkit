@@ -16,10 +16,17 @@ namespace {
 const char USAGE[] =
     "Usage: compare-manifests --ground-truth FILE --run FILE\n"
     "                         --mode strict|best-effort [options]\n"
+    "       compare-manifests --lint-known-failures FILE\n"
+    "                         --comparisons CHECK:PARTITION[,...] [--items "
+    "FILE]\n"
     "\n"
     "Compares a run's Manifest with Ground truth and prints a per-entry\n"
     "report. Exit status: 0 pass (warnings allowed), 1 failures, 2 bad usage\n"
     "or unreadable input.\n"
+    "\n"
+    "With --lint-known-failures, checks the whole Known failure list instead:\n"
+    "every line must belong to one of the comparisons the validate command\n"
+    "runs, or it could never be found stale. Exit status 1 if one doesn't.\n"
     "\n"
     "Options:\n"
     "  --ground-truth FILE    Ground truth Manifest\n"
@@ -40,7 +47,7 @@ const char USAGE[] =
 
 const char *const VALUE_OPTIONS[] = {"--ground-truth", "--run", "--mode",
     "--run-time", "--volatile", "--known-failures", "--check", "--partition",
-    "--items", "--max-items"};
+    "--items", "--max-items", "--lint-known-failures", "--comparisons"};
 
 bool
 open_input(const std::string &path, const char *what, std::ifstream &in,
@@ -69,6 +76,77 @@ load_manifest(
         return false;
     }
     return true;
+}
+
+bool
+append_items(
+    const std::string &path, const std::string &text, std::ostream &err)
+{
+    std::ofstream items(path, std::ios::app | std::ios::binary);
+    if (!items) {
+        err << "compare-manifests: cannot append to '" << path << "'\n";
+        return false;
+    }
+    items << text;
+    return true;
+}
+
+// --lint-known-failures: every line of the list must belong to one of the
+// comparisons, so that a comparison reads it and can find it stale.
+int
+lint_known_failures(std::map<std::string, std::string> &opt, std::ostream &out,
+    std::ostream &err)
+{
+    for (const auto &o : opt) {
+        if (o.first != "--lint-known-failures" && o.first != "--comparisons" &&
+            o.first != "--items") {
+            err << "compare-manifests: " << o.first
+                << " can't be used with --lint-known-failures\n";
+            return COMPARE_ERROR;
+        }
+    }
+    if (opt.count("--comparisons") == 0) {
+        err << "compare-manifests: --lint-known-failures needs --comparisons\n";
+        return COMPARE_ERROR;
+    }
+    std::vector<Comparison> comparisons;
+    std::string error;
+    if (!parse_comparisons(opt["--comparisons"], comparisons, error)) {
+        err << "compare-manifests: --comparisons: " << error << '\n';
+        return COMPARE_ERROR;
+    }
+    const std::string &path = opt["--lint-known-failures"];
+    std::ifstream in;
+    std::vector<KnownFailure> list;
+    if (!open_input(path, "Known failure list", in, err)) {
+        return COMPARE_ERROR;
+    }
+    if (!read_known_failures(in, list, error)) {
+        err << "compare-manifests: " << path << ": " << error << '\n';
+        return COMPARE_ERROR;
+    }
+    const std::vector<KnownFailure> unread =
+        unread_known_failures(list, comparisons);
+    std::string items;
+    for (const KnownFailure &k : unread) {
+        const std::string msg = "line " + std::to_string(k.line) + ": " +
+            k.check + ' ' + k.partition +
+            ": no comparison reads this Known failure, so it can never be "
+            "found stale (a misspelled check or partition, or one the "
+            "validate command no longer checks)";
+        out << "FAIL  " << msg << '\n';
+        items += "fail\t" + msg + '\n';
+    }
+    const std::string summary = std::to_string(list.size()) +
+        " Known failure line(s) in " + path + ", " +
+        std::to_string(comparisons.size()) + " comparison(s), " +
+        std::to_string(unread.size()) + " line(s) no comparison reads";
+    out << summary << '\n';
+    items += "note\t" + summary + '\n';
+    if (opt.count("--items") > 0 && !append_items(opt["--items"], items, err)) {
+        return COMPARE_ERROR;
+    }
+    return unread.empty() ? COMPARE_PASS : COMPARE_FAIL;
 }
 
 } // namespace
@@ -146,6 +224,9 @@ compare_cli(
         return COMPARE_ERROR;
     };
 
+    if (has("--lint-known-failures")) {
+        return lint_known_failures(opt, out, err);
+    }
     if (!has("--ground-truth") || !has("--run") || !has("--mode")) {
         return usage_error("--ground-truth, --run and --mode are required");
     }

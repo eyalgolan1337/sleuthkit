@@ -248,6 +248,52 @@ read_volatile_paths(
     return true;
 }
 
+bool
+parse_comparisons(
+    const std::string &text, std::vector<Comparison> &out, std::string &error)
+{
+    std::vector<Comparison> list;
+    size_t start = 0;
+    while (start <= text.size()) {
+        size_t end = text.find(',', start);
+        if (end == std::string::npos) {
+            end = text.size();
+        }
+        const std::string item = text.substr(start, end - start);
+        const size_t colon = item.find(':');
+        Comparison c;
+        if (colon != std::string::npos) {
+            c.check = item.substr(0, colon);
+            c.partition = item.substr(colon + 1);
+        }
+        if (!valid_name(c.check) || !valid_name(c.partition)) {
+            error = "bad comparison '" + item + "' (expected CHECK:PARTITION)";
+            return false;
+        }
+        list.push_back(c);
+        start = end + 1;
+    }
+    out = list;
+    return true;
+}
+
+std::vector<KnownFailure>
+unread_known_failures(const std::vector<KnownFailure> &list,
+    const std::vector<Comparison> &comparisons)
+{
+    std::set<std::pair<std::string, std::string>> read;
+    for (const Comparison &c : comparisons) {
+        read.emplace(c.check, c.partition);
+    }
+    std::vector<KnownFailure> unread;
+    for (const KnownFailure &k : list) {
+        if (read.count({k.check, k.partition}) == 0) {
+            unread.push_back(k);
+        }
+    }
+    return unread;
+}
+
 namespace {
 
 // One difference between Ground truth and the run, before classification.

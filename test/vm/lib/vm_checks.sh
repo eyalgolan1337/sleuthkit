@@ -47,6 +47,30 @@ GUEST_TOOLS=(fls icat fsstat istat tsk-harness capture-ground-truth tsk-corpus)
 # side, named <tool>-guest and <tool>-host (also in the Known failure list).
 TOOL_CHECKS=(fls icat fsstat istat)
 
+# vm_comparisons: every comparison gates 3 and 4 run, as CHECK:PARTITION
+# separated by commas (compare-manifests --lint-known-failures --comparisons).
+# The check names are the ones the gates pass with --check.
+vm_comparisons() {
+    local entry part mnt side tool out=()
+    for entry in "${STRICT_PARTITIONS[@]}"; do
+        read -r part mnt <<<"$entry"
+        for side in guest host; do
+            out+=("strict-$side:$part")
+            for tool in "${TOOL_CHECKS[@]}"; do
+                out+=("$tool-$side:$part")
+            done
+        done
+    done
+    for entry in "${BEST_EFFORT_PARTITIONS[@]}"; do
+        read -r part mnt <<<"$entry"
+        for side in guest host; do
+            out+=("best-effort-$side:$part")
+        done
+    done
+    local IFS=,
+    printf '%s\n' "${out[*]}"
+}
+
 # spot_check_paths <partition>: the istat spot-check paths of a partition,
 # one per line, from the committed list test/vm/istat-spot-checks.txt.
 spot_check_paths() {
