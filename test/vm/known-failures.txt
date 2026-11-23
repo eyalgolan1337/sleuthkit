@@ -1,0 +1,13 @@
+# Known failures of the validate command's VM checks (test/vm/README.md,
+# "Known failure list"). One per line: check, partition, subject (an encoded
+# path, or * for every entry or the whole run), difference, then a comment
+# saying why it is expected and which issue removes it. A line that no longer
+# matches a difference fails its gate: remove it once the problem is fixed.
+#
+# Checks: strict-guest (gate 3, Guest-side run of the Strict check).
+# Partitions: the guest's device names (sda4 /data, sda5 /data-compat,
+# sda6 /control, the Control file system).
+
+# check        partition  subject  difference     comment
+strict-guest   sda4       *        error:fs-open  /data is XFS: file system not recognised (no XFS support yet, #11)
+strict-guest   sda5       *        error:fs-open  /data-compat is XFS: file system not recognised (no XFS support yet, #11)

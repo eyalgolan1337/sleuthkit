@@ -8,6 +8,8 @@
 #   make -f test/vm/manifest/manifest.mk                 # all tools and self-tests
 #   make -f test/vm/manifest/manifest.mk check           # ... and run the self-tests
 #   make -f test/vm/manifest/manifest.mk capture-static  # statically linked capture
+#   make -f test/vm/manifest/manifest.mk harness-static  # statically linked harness
+#                                         # (in a tree configured --disable-shared)
 #   make -f test/vm/manifest/manifest.mk clean
 #
 # Output goes to $(BUILD_DIR) (default build/vm-tools, gitignored).
@@ -33,7 +35,7 @@ CAPTURE := $(BUILD_DIR)/capture-ground-truth
 HARNESS := $(BUILD_DIR)/tsk-harness
 HARNESS_SELFTEST := $(BUILD_DIR)/harness-selftest
 
-.PHONY: all check clean capture-static
+.PHONY: all check clean capture-static harness-static
 all: $(LIB) $(COMPARE) $(SELFTEST) $(CAPTURE) $(HARNESS) $(HARNESS_SELFTEST)
 
 check: $(SELFTEST) $(HARNESS_SELFTEST)
@@ -116,6 +118,19 @@ $(CAPTURE_STATIC): $(BUILD_DIR)/capture_main.o $(BUILD_DIR)/capture.o $(LIB)
 	mkdir -p $(@D)
 	$(CXX) $(CXXFLAGS) $(LDFLAGS) -static -o $@ $^
 
+# The harness for the guest (Guest-side runs): fully static, like
+# capture-static. Build it in a tree configured --disable-shared, so the staged
+# library is libtsk.a. Its own dependencies are the -l flags of libtsk.la's
+# dependency_libs (tsk.pc's Libs.private leaves out zlib); g++ adds libstdc++.
+# test/vm/guest-build.sh does this in build/guest-static/.
+HARNESS_STATIC := $(BUILD_DIR)/static/tsk-harness
+TSK_LIBS_PRIVATE = $(filter -l%,$(shell sed -n "s/^dependency_libs='\(.*\)'/\1/p" tsk/libtsk.la 2>/dev/null))
+harness-static: $(HARNESS_STATIC)
+$(HARNESS_STATIC): $(BUILD_DIR)/harness_main.o $(BUILD_DIR)/harness.o $(LIB) $(TSK_STAGE_STAMP)
+	mkdir -p $(@D)
+	$(CXX) $(CXXFLAGS) $(LDFLAGS) -static -o $@ $(filter %.o %.a,$^) \
+	    -L$(TSK_STAGE_LIBDIR) -ltsk $(TSK_LIBS_PRIVATE) -lpthread
+
 $(HARNESS): $(BUILD_DIR)/harness_main.o $(BUILD_DIR)/harness.o $(LIB) $(TSK_STAGE_STAMP)
 	$(CXX) $(CXXFLAGS) $(LDFLAGS) -o $@ $(filter %.o %.a,$^) $(HARNESS_LIBS)
 
@@ -127,7 +142,8 @@ $(BUILD_DIR) $(DEP_DIR):
 
 clean:
 	rm -f $(BUILD_DIR)/*.o $(DEP_DIR)/*.Po $(LIB) $(COMPARE) $(SELFTEST) $(CAPTURE) \
-	    $(HARNESS) $(HARNESS_SELFTEST) $(TSK_STAGE_STAMP) $(CAPTURE_STATIC)
+	    $(HARNESS) $(HARNESS_SELFTEST) $(TSK_STAGE_STAMP) $(CAPTURE_STATIC) \
+	    $(HARNESS_STATIC)
 	rm -rf $(TSK_STAGE)
 
 -include $(wildcard $(DEP_DIR)/*.Po)

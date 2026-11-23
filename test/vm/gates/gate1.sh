@@ -1,7 +1,7 @@
 # shellcheck shell=bash
 # Gate 1: devcontainer build, C++17/C++20 syntax check of changed C++ files,
 # and the self-tests of the comparison step, Ground truth capture and the
-# harness. A later ticket adds the static guest build here.
+# harness, and the static guest build for the Validation VM.
 
 gate1_build() {
     local fresh=$VALIDATE_FRESH compiler
@@ -81,9 +81,23 @@ gate1_harness_selftest() {
     return "$rc"
 }
 
+# The static guest build (test/vm/guest-build.sh). On the host, the validate
+# command already ran it before collecting the VM's results (gate 3), so this
+# is then an incremental rebuild of the same tree, and reports its result.
+gate1_guest_build() {
+    local fresh=()
+    [[ -n $VALIDATE_FRESH && -z ${TSK_VALIDATE_VM_COLLECTED:-} ]] && fresh=(--fresh)
+    if ! test/vm/guest-build.sh "${fresh[@]}"; then
+        item_fail "the static guest build failed; see the log"
+        return 1
+    fi
+    item_note "built fls, icat, fsstat, istat, tsk-harness and capture-ground-truth, statically linked, in build/guest-static/bin"
+}
+
 gate_1() {
     gate_begin 1 "Build, C++17/C++20 syntax and self-tests"
     run_check build "Build (configure if needed, make, check programs, compile_commands.json)" gate1_build
+    run_check guest-build "Static guest build (build/guest-static)" gate1_guest_build
     run_check cxx17 "C++17 syntax-only compile of changed C++ files" gate1_cxx_std c++17
     run_check cxx20 "C++20 syntax-only compile of changed C++ files" gate1_cxx_std c++20
     run_check manifest-selftest "Comparison step and Ground truth capture self-test" gate1_manifest_selftest
