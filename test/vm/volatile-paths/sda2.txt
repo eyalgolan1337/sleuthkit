@@ -1,0 +1,9 @@
+# Volatile paths of /boot (sda2) for the Best-effort check (test/vm/README.md,
+# "Volatile path list"). One encoded path per line, relative to the root of
+# the file system, so /boot/grub2/grubenv is /grub2/grubenv here. Each covers
+# itself and everything below it. A difference under one of these is a
+# warning, not a failure.
+#
+# GRUB's environment block: grub2-set-bootflag and the boot-success timer
+# rewrite it after each boot and login (boot_success, boot_indeterminate).
+/grub2/grubenv

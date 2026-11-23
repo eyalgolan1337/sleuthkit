@@ -6,7 +6,7 @@ Its entry point is the **validate command**, `test/vm/validate.sh`. It gives one
 
 ## Prerequisites
 
-- Docker (29 or newer works) and the devcontainer image in `.devcontainer/`, usable by the host user without `sudo`: the Host-side runs of gate 3 start one-off containers of that image. Everything is built and checked there, with GCC 16.1 as the only reference toolchain (see `CLAUDE.md`, "Development environment").
+- Docker (29 or newer works) and the devcontainer image in `.devcontainer/`, usable by the host user without `sudo`: the Host-side runs of gates 3 and 4 start one-off containers of that image. Everything is built and checked there, with GCC 16.1 as the only reference toolchain (see `CLAUDE.md`, "Development environment").
 - On the host, the devcontainers CLI 0.91.0 or newer (`devcontainer`). If it isn't installed, the command uses `npx @devcontainers/cli@0.91.0`, so Node.js with `npx` is enough. Older CLI versions hang on Docker 29+.
 - Network access on the first run: `make check` downloads its test images to `tests/data/` (`tests/test_libraries.sh`).
 
@@ -21,7 +21,7 @@ test/vm/validate.sh --base REF   # compare with REF instead of develop
 test/vm/validate.sh --keep-running  # leave the Validation VM running afterwards
 ```
 
-On the host, the command starts the devcontainer if necessary (`devcontainer up`), collects the Validation VM's results for gate 3 (see [Gate 3: Strict checks](#gate-3-strict-checks)), and runs itself inside the devcontainer (`devcontainer exec`) for the gates. It never builds in the host tree. The repository is mounted at the same path in both, so the report is visible on the host. In a git worktree, the command uses the main checkout's devcontainer (a container opened on the worktree folder alone couldn't see the main checkout's `.git`), so the worktree must be inside the main checkout, for example under `.claude/worktrees/`. That container is built from the main checkout's `.devcontainer/`. If the tree was configured outside the devcontainer, gate 1 runs `make distclean` and configures again, and the report says so.
+On the host, the command starts the devcontainer if necessary (`devcontainer up`), collects the Validation VM's results for gates 3 and 4 (see [Gate 3: Strict checks](#gate-3-strict-checks) and [Gate 4: Best-effort checks](#gate-4-best-effort-checks)), and runs itself inside the devcontainer (`devcontainer exec`) for the gates. It never builds in the host tree. The repository is mounted at the same path in both, so the report is visible on the host. In a git worktree, the command uses the main checkout's devcontainer (a container opened on the worktree folder alone couldn't see the main checkout's `.git`), so the worktree must be inside the main checkout, for example under `.claude/worktrees/`. That container is built from the main checkout's `.devcontainer/`. If the tree was configured outside the devcontainer, gate 1 runs `make distclean` and configures again, and the report says so.
 
 "Changed" means changed since the merge-base of `develop` and `HEAD`: committed on the branch, staged, unstaged, or untracked and not ignored.
 
@@ -29,7 +29,7 @@ Exit status: `0` if no gate failed, `1` if any gate failed, `2` if the command c
 
 A full run builds everything from clean and runs `make check`. It takes a few minutes, plus a minute or two for the Validation VM to boot if it isn't running.
 
-Run it on the host. Inside the devcontainer the command still runs every gate, but it can't reach the Validation VM (no `vmrun`, no SSH key), so gate 3 fails and the report says why.
+Run it on the host. Inside the devcontainer the command still runs every gate, but it can't reach the Validation VM (no `vmrun`, no SSH key), so gates 3 and 4 fail and the report says why.
 
 ## Gates
 
@@ -38,7 +38,7 @@ Run it on the host. Inside the devcontainer the command still runs every gate, b
 | 1 | Clean build of the library, tools, samples, test programs and the validation setup's C++ tools under `bear` (`.devcontainer/build-compile-db.sh`), which also regenerates `compile_commands.json`. The [static guest build](#the-static-guest-build). Then a syntax-only compile of each changed C++ file as C++17 and as C++20, the [comparison step's self-test](#gate-1-comparison-step-self-test) and the [harness self-test](#gate-1-harness-self-test). | Implemented |
 | 2 | The full `make check`. | Implemented |
 | 3 | **Strict checks** of `/data`, `/data-compat` and the **Control file system** on the Validation VM, each with its [CLI tool checks](#gate-3-cli-tool-checks) (`fls`, `icat`, `fsstat`, `istat`): [Gate 3: Strict checks](#gate-3-strict-checks). | Implemented |
-| 4 | **Best-effort checks** | Not yet implemented (#21) |
+| 4 | **Best-effort checks** of `/` and `/boot` on the Validation VM, in use, with no freeze and no cache flush: [Gate 4: Best-effort checks](#gate-4-best-effort-checks). | Implemented |
 | 5 | `clang-format` and `clang-tidy` on changed lines only. | Implemented |
 
 A gate that doesn't exist yet appears in the report as `NOT IMPLEMENTED`. It neither passes nor fails.
@@ -67,7 +67,7 @@ A **Strict check** compares TSK's view of a frozen file system with **Ground tru
 - the **Guest-side run**: the harness, statically linked, reads the partition's `/dev/sdN` device inside the Validation VM;
 - the **Host-side run**: the harness of the normal devcontainer build reads partition N of the VM's `.vmdk` on the host, while the VM is running and the file system is frozen.
 
-Until XFS support exists, `/data` and `/data-compat` are [Known failures](#known-failure-list) ("file system not recognised"), so in practice the gate shows that the Control file system passes. `/` and `/boot` are in use and can't be frozen; they get Best-effort checks in gate 4 (#21).
+Until XFS support exists, `/data` and `/data-compat` are [Known failures](#known-failure-list) ("file system not recognised"), so in practice the gate shows that the Control file system passes. `/` and `/boot` are in use and can't be frozen; they get [Best-effort checks in gate 4](#gate-4-best-effort-checks).
 
 **Where it runs.** Only the host can reach the Validation VM, so the work is split:
 
@@ -147,6 +147,41 @@ build/vm-tools/check-tool fls|icat|fsstat|istat --ground-truth-dir DIR --run-dir
 **Reading the CLI tool checks in the report.** A failed capture of their Ground truth (`capture-tools`) or a failed tool run (`run-tools` in the guest, `host-tools` on the host) is a failure naming the step. A writable path in the host's one-off container is also a failure. Then the comparison's findings come as for the harness's checks, against the same Ground truth: for example `icat-guest sda6: /corpus/links/target.txt: sha256 differs: ...`. The check's log has the tool run's log, each tool's exit status and first line of standard error, and the full comparison; the raw output is in the `tools/` directories above. With `TSK_VALIDATE_BREAK`, the `icat` checks of both sides fail too, naming the file and `sha256`. The other tool checks are unaffected: they don't read file content.
 
 **Self-test.** `test/vm/toolcheck/toolcheck_selftest.cpp` is linked into `manifest-selftest` (gate 1). It covers each parser on output captured from the 4.15.0 tools: fls paths, types, virtual entries and control characters; each autodetection error as "not recognised"; icat results by inode, failed files and probes; `stat` records and `istat` output, including mode strings with setuid, setgid and sticky bits, times before 1970 and after 2038, and istat's zero times; the guest's ext4 and XFS summaries and ext `fsstat` output, including the UUID without leading zeros. It also covers the summary comparison with Known failures, and the `check-tool` command: a pass for every tool, a changed byte failing `icat`, a wrong expected summary value failing `fsstat`, "not recognised" as a Known failure, and usage and input errors.
+
+### Gate 4: Best-effort checks
+
+A **Best-effort check** compares TSK's view of a file system that is in use with **Ground truth**, with no freeze and no cache flush, so it reflects what TSK sees on a running machine: metadata still only in the log, stale cache pages (#9), files changing during the read. Gate 4 runs one per file system that can't be frozen: `/boot` (`sda2`, XFS) and `/` (`sda3`, XFS). Each has a Guest-side run on `/dev/sdN` and a Host-side run on partition N of the `.vmdk`, like the Strict checks, reported as separate checks.
+
+Until XFS support exists, both are [Known failures](#known-failure-list) ("file system not recognised", `error:fs-open`) on both sides, so in practice the gate shows that the sequence ran and that each run failed the expected way. libtsk words the error differently for the two: `Cannot determine file system type` for `/`, and `Possible encryption detected (High entropy ...)` for `/boot` (libtsk's entropy test, run when no file system type is recognised). Both are the same `fs-open` failure.
+
+**The sequence**, per file system, run by `collect-vm.sh` on the host before the Strict checks, so the guest's caches are as normal use leaves them (the Strict checks drop them):
+
+1. Check that `/dev/sdaN` is mounted on the expected mount point.
+2. Read the guest's clock, as the start of Ground truth capture.
+3. Capture Ground truth of the file system alone (`tsk-validate.sh capture-fs`): `capture-ground-truth` on a non-recursive, read-only, `noatime` bind mount of the mount point in `/run/tsk-validate/`. Other file systems are mounted on directories of `/` (`/boot`, `/proc`, `/run`, `/data`, ...). `stat` of such a directory describes the root mounted on it, not the directory that TSK reads on the device. The bind mount shows the file system without them, and the capture writes nothing to it. The Manifests go to `/run/tsk-validate/out/` (tmpfs), not to the file system being checked.
+4. The Guest-side run: `tsk-harness /dev/sdaN`.
+5. Read the guest's clock, as the Guest-side run's timestamp.
+6. The Host-side run: `tsk-harness --partition N` on the `.vmdk`, in a one-off container, exactly as in [gate 3](#gate-3-strict-checks).
+7. Read the guest's clock again, as the Host-side run's timestamp.
+
+There is no `sync`, `fsfreeze` or `drop_caches` step. Gate 4 checks this from the steps the collection recorded: a `freeze`, `unfreeze` or `flush` step fails the check, and the report notes the steps that ran. Results go to `build/validate/<run>/vm/best-effort-guest/sdaN/` and `best-effort-host/sdaN/`.
+
+**The comparison**: `compare-manifests --mode best-effort --run-time <timestamp> --volatile test/vm/volatile-paths/sdaN.txt --known-failures test/vm/known-failures.txt --check best-effort-guest|best-effort-host --partition sdaN`. A difference is tolerated only if its path is under a [Volatile path](#volatile-path-list), or if the entry's ctime (in Ground truth or in the run) is in the 10 minutes before the run finished. Every other difference is a failure. The timestamps come from the guest's clock, which also set the ctimes, so a host clock that is off doesn't matter. The window ends when the run ends. If the run ended more than 10 minutes after Ground truth capture started, the window no longer covers entries changed just before the capture, and the check says so in a warning. Today's runs take seconds; this matters once XFS is read and each run hashes all of `/`.
+
+**Reading gate 4 in the report.** Per file system, two checks:
+
+- `Best-effort check, Guest side: <mount> (<partition>)`: a failed step is a failure naming the step. A note confirms there was no freeze and no cache flush. An incomplete Ground truth (an entry vanished between the directory listing and its `stat`, which is normal on a file system in use) is a warning, not a failure; the comparison then sees the entry as `extra` in the run and applies the same tolerances. Then the comparison's findings, and one `Known failure:` note per tolerated Known failure.
+- `Best-effort check, Host side: <mount> (<partition>), .vmdk`: the one-off container's refused writes, a failed Host-side run, then the comparison's findings against the Guest side's Ground truth.
+
+**Best-effort warnings.** Each tolerated difference is a `warning:` that names the encoded path, the difference, both values and why it was tolerated: `under Volatile path /var/log`, or `ctime <time> is within the 10 minutes before the run's end (<time>)`. Warnings never fail the gate. Read them like this:
+
+- Warnings under `/var/log`, `/var/lib` and the other Volatile paths are expected on every run: the system wrote there while the check ran.
+- Recent-ctime warnings on files the validate command itself wrote (`/root/tsk-validate/` on `/`) are expected too.
+- A warning elsewhere means a file changed in the 10 minutes before the run. Look at it if it repeats on runs where nothing should have changed it: TSK may be reading stale metadata (for example from the log or the cache, #9), or the ctime itself may be misread.
+- A difference on an entry whose ctime is older than 10 minutes, outside the Volatile paths, is a failure: nothing on the running system explains it.
+- `the run ended Ns after Ground truth capture started, more than the 10-minute recent-ctime window`: the run was too slow for the window to cover the whole check. Failures on entries changed just before the capture may then be live-disk effects, not misreadings.
+
+The report shows at most 20 warnings per check, then a count of the rest. The check's log (`logs/gate4-best-effort-guest-sdaN.log`, `logs/gate4-best-effort-host-sdaN.log`) has the full per-entry comparison, with each step's output and timings.
 
 ### Gate 5: format and lint
 
@@ -306,17 +341,30 @@ strict-host    sda6       /lost+found      crtime          TSK doesn't read ext4
 strict-guest   sda6       *                crtime          the same for every entry
 ```
 
-- `check` and `partition` name the check and the partition the line belongs to (`[A-Za-z0-9._-]+`). The gate that runs the comparison passes the same names with `--check` and `--partition`. No wildcards, so a line always belongs to exactly one comparison. Check names: `strict-guest` and `strict-host` (gate 3, the Guest-side run and the Host-side run), and `fls-guest`, `icat-guest`, `fsstat-guest`, `istat-guest` and their `-host` twins (gate 3, the [CLI tool checks](#gate-3-cli-tool-checks)). Partition names are the guest's device names: `sda4`, `sda5`, `sda6`.
+- `check` and `partition` name the check and the partition the line belongs to (`[A-Za-z0-9._-]+`). The gate that runs the comparison passes the same names with `--check` and `--partition`. No wildcards, so a line always belongs to exactly one comparison. Check names: `strict-guest` and `strict-host` (gate 3, the Guest-side run and the Host-side run of the Strict check), `fls-guest`, `icat-guest`, `fsstat-guest`, `istat-guest` and their `-host` twins (gate 3, the [CLI tool checks](#gate-3-cli-tool-checks)), and `best-effort-guest` and `best-effort-host` (gate 4, the Guest-side run and the Host-side run of the Best-effort check). Partition names are the guest's device names: `sda2` (`/boot`), `sda3` (`/`), `sda4`, `sda5`, `sda6`.
 - `subject` is an encoded path, or `*`. With a path, the line covers that entry only. With `*`, it covers that difference on every entry, or the whole run for `error:<code>`. A line naming the path takes precedence over a `*` line. A `*` line stays in use while any entry still has the difference, so a partial fix doesn't make it stale; prefer path lines once only a few entries are affected.
 - `difference` is `missing`, `extra`, one of the 12 compared field names, one of the 7 summary fields of the `fsstat` checks (`fs-type`, `block-size`, `inode-size`, `group-count`, `uuid`, `label`, `version`, with the subject `*`), or `error:<code>`, which needs the subject `*`. `error:<code>` covers a run whose Manifest has `!error` with that code, i.e. a whole-file-system failure such as "file system not recognised".
 - The rest of the line is a free-text comment that is shown in the report. Say why the failure is expected and which issue fixes it.
 - Blank lines and lines starting with `#` are skipped. A duplicate line or an unknown difference is an error (exit status 2).
 
-The committed list is `test/vm/known-failures.txt`. It records `/data` (`sda4`) and `/data-compat` (`sda5`) as `* error:fs-open` for `strict-guest` and `strict-host` and for each CLI tool check: no XFS support yet. On the Control file system (`sda6`), it records the libtsk ext4 defects the [Test corpus](#the-test-corpus) exposes, path by path, on both sides: times before 1970 and after 2106 (#30), slow symlinks with no target (#31), and three phantom names in the 50,000-entry directory (#32). The phantom names are bytes of the directory's htree index: name hashes (seeded per file system) and logical block numbers, both the same in every run on this file system. Two runs gave the same three names. `fls` lists the phantom names too, so they are also `extra` for `fls-guest` and `fls-host`. `fls` also prints a socket's metadata type as `h` (`s/h`): `tsk_fs_meta_type_str` has `s` and `h` in the wrong order for `TSK_FS_META_TYPE_ENUM`, an upstream output defect, so `/corpus/special/socket` is a `type` Known failure of both `fls` checks. `/boot` and `/` get their lines with the Best-effort check (#21), the only check that reads them.
+The committed list is `test/vm/known-failures.txt`. It records `/data` (`sda4`) and `/data-compat` (`sda5`) as `* error:fs-open` for `strict-guest` and `strict-host` and for each CLI tool check: no XFS support yet. On the Control file system (`sda6`), it records the libtsk ext4 defects the [Test corpus](#the-test-corpus) exposes, path by path, on both sides: times before 1970 and after 2106 (#30), slow symlinks with no target (#31), and three phantom names in the 50,000-entry directory (#32). The phantom names are bytes of the directory's htree index: name hashes (seeded per file system) and logical block numbers, both the same in every run on this file system. Two runs gave the same three names. `fls` lists the phantom names too, so they are also `extra` for `fls-guest` and `fls-host`. `fls` also prints a socket's metadata type as `h` (`s/h`): `tsk_fs_meta_type_str` has `s` and `h` in the wrong order for `TSK_FS_META_TYPE_ENUM`, an upstream output defect, so `/corpus/special/socket` is a `type` Known failure of both `fls` checks. `/boot` (`sda2`) and `/` (`sda3`) are `* error:fs-open` for `best-effort-guest` and `best-effort-host`, for the same reason: no XFS support yet.
 
 ### Volatile path list
 
-A text file with one encoded path per line, relative to the file system root. Blank lines and lines starting with `#` are skipped. A Volatile path covers itself and everything below it. The committed lists come with the Best-effort checks (#21).
+A text file with one encoded path per line, relative to the file system root. Blank lines and lines starting with `#` are skipped. A Volatile path covers itself and everything below it.
+
+The committed lists, one per Best-effort partition, are `test/vm/volatile-paths/<partition>.txt`. Their paths are relative to that file system's root, so `/boot/grub2/grubenv` is `/grub2/grubenv` in `sda2.txt`.
+
+| List | File system | Volatile paths | Why they change |
+| --- | --- | --- | --- |
+| `sda3.txt` | `/` | `/var/log` | logs and the journal |
+| | | `/var/lib` | state that services rewrite at any time: the rpm and dnf databases, systemd timers and random seed, NetworkManager and DHCP leases, logrotate, chrony |
+| | | `/var/cache` | dnf metadata, man-db, ldconfig |
+| | | `/var/spool` | mail and job queues |
+| | | `/tmp`, `/var/tmp` | temporary files (on AlmaLinux 9, `/tmp` is a directory of `/`, not a tmpfs) |
+| `sda2.txt` | `/boot` | `/grub2/grubenv` | GRUB's environment block, rewritten after each boot and login (`boot_success`) |
+
+Keep the lists short: a path belongs here only if the running system changes it on its own. Everything else that changes during a run, such as the static guest build that the validate command copies to `/root/tsk-validate/`, is covered by the recent-ctime rule instead.
 
 ### The self-test
 
@@ -605,7 +653,7 @@ The checks were themselves tested by breaking a committed image (one byte of `/s
 
 The **Validation VM** is a small AlmaLinux 9.9 virtual machine under VMware Workstation. Its disk holds XFS file systems with different format variants and an ext4 **Control file system**. **Host-side runs** read its `.vmdk` and **Guest-side runs** read its `/dev/sd*` devices, and both are compared with **Ground truth** from the guest's kernel. The scripts in this directory build the VM unattended (issue #13) and control it from the host.
 
-Gate 3 of the validate command uses it (see [Gate 3: Strict checks](#gate-3-strict-checks)); gate 4 will (#21).
+Gates 3 and 4 of the validate command use it (see [Gate 3: Strict checks](#gate-3-strict-checks) and [Gate 4: Best-effort checks](#gate-4-best-effort-checks)).
 
 ### VM prerequisites
 
@@ -715,10 +763,11 @@ The Validation VM's disk has no v4 file system. The [XFS fixture images](#xfs-fi
 | `check-xfs-v4.sh` | host | Tests whether the guest kernel mounts XFS v4 |
 | `kickstart/ks.cfg.in` | installer | Kickstart template |
 | `guest/verify-layout.sh` | guest | Layout and file-system checks, sent by `verify-vm.sh` |
-| `collect-vm.sh` | host | Collects the VM's results for gate 3: VM start and stop, the Strict check sequence, the Host-side runs' one-off containers |
-| `guest/tsk-validate.sh` | guest | One step of the Strict check sequence per call (Test corpus, freeze, capture, flush, XFS formats, run, unfreeze, test hooks), copied by `collect-vm.sh` |
+| `collect-vm.sh` | host | Collects the VM's results for gates 3 and 4: VM start and stop, the Best-effort checks, the Strict check sequence, the Host-side runs' one-off containers |
+| `guest/tsk-validate.sh` | guest | One step of the Strict check sequence or the Best-effort check per call (Test corpus, freeze, capture, capture-fs, flush, XFS formats, run, unfreeze, test hooks), copied by `collect-vm.sh` |
 | `guest-build.sh` | devcontainer | The [static guest build](#the-static-guest-build) |
 | `host-build.sh` | devcontainer | The normal build's library and `tsk-harness`, for the Host-side runs |
 | `host-run.sh` | one-off container | The Host-side run: read-only probe, then the harness on the `.vmdk`; started by `collect-vm.sh` |
-| `lib/vm_checks.sh` | both | The Strict check partitions and mount points, shared by `collect-vm.sh` and gate 3 |
+| `lib/vm_checks.sh` | both | The Strict check and Best-effort check partitions and mount points, shared by `collect-vm.sh` and gates 3 and 4 |
+| `volatile-paths/` | devcontainer | The committed [Volatile path lists](#volatile-path-list) |
 | `known-failures.txt` | devcontainer | The committed [Known failure list](#known-failure-list) |

@@ -4,9 +4,9 @@
 #
 #   test/vm/validate.sh [--base REF] [--fresh] [--keep-running]
 #
-# On the host, it first collects the Validation VM's results for gate 3 (the
-# static guest build and the Host-side run's harness in the devcontainer, then
-# test/vm/collect-vm.sh), then
+# On the host, it first collects the Validation VM's results for gates 3 and 4
+# (the static guest build and the Host-side run's harness in the devcontainer,
+# then test/vm/collect-vm.sh), then
 # runs every gate in the devcontainer. Every gate runs even if an earlier one
 # fails. The report goes to build/validate/<UTC time>/report.md
 # (build/validate/latest/report.md) and is printed at the end. Exit status: 0 if no gate failed, 1 if a gate failed,
@@ -153,11 +153,11 @@ $WINDOWS_NOTE" \
 }
 
 # On the host, before the gates: the Validation VM is reachable only from
-# here (vmrun, its SSH key), so its results are collected now and gate 3
-# compares them in the devcontainer. The static guest build (Guest-side runs)
+# here (vmrun, its SSH key), so its results are collected now and gates 3
+# and 4 compare them in the devcontainer. The static guest build (Guest-side runs)
 # and the normal build's harness (Host-side runs, in one-off containers of the
 # devcontainer's image) are built in the devcontainer first. Failures here
-# don't stop the command: gate 3 reports them.
+# don't stop the command: gates 3 and 4 report them.
 host_collect_vm() {
     make_run_dir
     trap host_interrupted INT TERM
@@ -172,7 +172,7 @@ host_collect_vm() {
         "$REPO/test/vm/host-build.sh" "${fresh[@]}" >"$RUN_DIR/logs/vm-host-build.log" 2>&1
     # Gate 1 reads it: after a successful host-build.sh the tree is configured.
     echo $? >"$RUN_DIR/logs/vm-host-build.status"
-    echo "Collecting the Validation VM's results for gate 3 (log: build/validate/$RUN_NAME/logs/vm-collect.log)" >&2
+    echo "Collecting the Validation VM's results for gates 3 and 4 (log: build/validate/$RUN_NAME/logs/vm-collect.log)" >&2
     # The one-off containers of the Host-side runs use the image of this
     # devcontainer (in a git worktree, the main checkout's).
     TSK_VALIDATE_WORKSPACE=$WORKSPACE "$VALIDATE_DIR/collect-vm.sh" "$RUN_DIR" "${keep[@]}" \
@@ -251,9 +251,9 @@ else
 fi
 
 if [[ -n ${TSK_VALIDATE_VM_COLLECTED:-} ]]; then
-    vm_line="its results were collected on the host before the gates (\`logs/vm-collect.log\`) and are checked in gate 3, which also says whether the collection succeeded"
+    vm_line="its results were collected on the host before the gates (\`logs/vm-collect.log\`) and are checked in gates 3 and 4; gate 3 also says whether the collection succeeded"
 else
-    vm_line="not used: this run started inside the devcontainer, which can't reach the VM, so gate 3 fails. Run \`test/vm/validate.sh\` on the host."
+    vm_line="not used: this run started inside the devcontainer, which can't reach the VM, so gates 3 and 4 fail. Run \`test/vm/validate.sh\` on the host."
 fi
 
 HEADER="- Started: $STARTED

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Host side of the validate command's VM gates (test/vm/README.md, "Gate 3:
-# Strict checks"). Runs on the host, never in the devcontainer: it needs vmrun
+# Strict checks" and "Gate 4: Best-effort checks"). Runs on the host, never in the devcontainer: it needs vmrun
 # and the VM's SSH key. It builds nothing; the static guest build
 # (test/vm/guest-build.sh) must already be in build/guest-static/bin.
 #
@@ -13,7 +13,10 @@
 # block-device cache and drop page caches, check the corpus's XFS formats, the
 # Guest-side run on /dev/sdN and its CLI tool checks, the Host-side run on the
 # .vmdk and its CLI tool checks, unfreeze. Results go to RUN_DIR/vm/ for gate
-# 3, which compares them in the devcontainer. Then it stops the VM, unless
+# 3, which compares them in the devcontainer. Before the Strict checks, it
+# runs the Best-effort check of / and /boot for gate 4 (README "Gate 4:
+# Best-effort checks"): Ground truth, the Guest-side run and the Host-side
+# run, with no freeze and no cache flush. Then it stops the VM, unless
 # --keep-running is given.
 #
 # The Host-side run uses the harness of the normal devcontainer build
@@ -29,7 +32,8 @@
 # the guest any more, by a timer in the guest armed at each freeze.
 #
 # Exit status: 0 when it ran to the end (the checks themselves may have found
-# problems; gate 3 reports them), 1 if it couldn't collect, 130 if interrupted.
+# problems; gates 3 and 4 report them), 1 if it couldn't collect, 130 if
+# interrupted.
 #
 # Test-only hooks (environment):
 #   TSK_VALIDATE_BREAK=PART:PATH   after Ground truth, flip one byte of the file
@@ -185,11 +189,12 @@ else
     printf 'one-off containers of the devcontainer image %s, reading %s\n' "$HOST_IMAGE" "$TSK_VM_VMDK" >"$OUT/host.txt"
 fi
 
-# host_run <partition>: the Host-side run of the partition's Strict check, in
+# host_run <partition> [<result dir>]: the Host-side run of the partition, in
 # a one-off container. The guest's sdaN is the Nth partition of the .vmdk.
-# Results in strict-host/<partition>/, like a guest step's.
+# Results in the result directory (default strict-host/<partition>/, the
+# Strict check's), like a guest step's.
 host_run() {
-    local part=$1 dir=$OUT/strict-host/$1 rc start
+    local part=$1 dir=${2:-$OUT/strict-host/$1} rc start
     mkdir -p "$dir"
     : >"$dir/steps.tsv"
     start=$SECONDS
@@ -197,7 +202,7 @@ host_run() {
         echo "$HOST_ERR" >"$dir/host-run.log"
         rc=125
     else
-        log "Strict check, Host side: $TSK_VM_VMDK, partition ${part#sda}"
+        log "Host-side run: $TSK_VM_VMDK, partition ${part#sda}"
         HOST_CONTAINER=tsk-validate-host-$$-$part
         timeout --foreground "$STEP_TIMEOUT" docker run --rm --init --name "$HOST_CONTAINER" \
             --network none --user "$(id -u):$(id -g)" --workdir "$REPO" \
@@ -256,7 +261,7 @@ host_tools() {
     printf '%s\t%s\t%s\n' host-tools "$rc" $((SECONDS - start)) >>"$dir/tool-steps/steps.tsv"
 }
 
-# --- Strict checks. ---
+# --- Steps in the guest, for both kinds of check. ---
 # step <part-dir> <tsk-validate.sh command> [args...]: runs one step, its
 # output in <command>.log, its exit status appended to steps.tsv. Returns the
 # exit status.
@@ -344,6 +349,61 @@ strict_check() {
     return 0
 }
 
+# --- Best-effort checks (gate 4). ---
+# Their outputs go to tmpfs in the guest, not to the file systems they check.
+BEST_EFFORT_GUEST_OUT=/run/tsk-validate/out
+
+# guest_time <file>: the guest's clock now, in nanoseconds since the epoch.
+# A run's timestamp comes from the guest's clock, which also set the ctimes it
+# is compared with.
+guest_time() {
+    gssh 60 date +%s%N >"$1" 2>&1 || : >"$1"
+}
+
+# best_effort_check <partition> <mount point>: the Best-effort check of a file
+# system in use. No freeze and no cache flush: Ground truth of the file system
+# alone (capture-fs), the Guest-side run on /dev/sdN, the Host-side run on the
+# .vmdk. The guest's clock is read when Ground truth capture starts
+# (gt-start-time) and when each run finishes (run-time). The guest's steps go
+# to best-effort-guest/<partition>/, the Host-side run's to
+# best-effort-host/<partition>/.
+best_effort_check() {
+    local part=$1 mnt=$2 dir=$OUT/best-effort-guest/$1 host_dir=$OUT/best-effort-host/$1
+    local gout=$BEST_EFFORT_GUEST_OUT/$1
+    mkdir -p "$dir" "$host_dir"
+    : >"$dir/steps.tsv"
+    log "Best-effort check: $mnt ($part)"
+    best_effort_steps "$part" "$mnt" "$dir" "$host_dir" "$gout"
+    fetch "$gout/ground-truth.manifest" "$dir/ground-truth.manifest" || rm -f "$dir/ground-truth.manifest"
+    fetch "$gout/guest.manifest" "$dir/guest.manifest" || rm -f "$dir/guest.manifest"
+    gssh "$STEP_TIMEOUT" rm -rf "$gout"
+}
+
+# best_effort_steps <partition> <mount point> <guest dir> <host dir> <guest
+# output dir>: the steps of best_effort_check; stops at the first step that
+# leaves nothing to compare.
+best_effort_steps() {
+    local part=$1 mnt=$2 dir=$3 host_dir=$4 gout=$5 dev=/dev/$1
+    step "$dir" check-mount "$dev" "$mnt" || return 0
+    gssh "$STEP_TIMEOUT" sh -c "rm -rf $gout && mkdir -p $gout" || return 0
+    guest_time "$dir/gt-start-time"
+    # 1: Ground truth is incomplete (an entry vanished while it was read);
+    # gate 4 reports it, and the comparison still runs.
+    step "$dir" capture-fs "$mnt" "$gout/ground-truth.manifest" || (($? == 1)) || return 0
+    step "$dir" run "$dev" "$gout/guest.manifest"
+    guest_time "$dir/run-time"
+    host_run "$part" "$host_dir"
+    guest_time "$host_dir/run-time"
+}
+
+# First, so the guest's caches are as normal use leaves them: the Strict
+# checks drop the page caches.
+for entry in "${BEST_EFFORT_PARTITIONS[@]}"; do
+    read -r part mnt <<<"$entry"
+    best_effort_check "$part" "$mnt"
+done
+
+# --- Strict checks (gate 3). ---
 for entry in "${STRICT_PARTITIONS[@]}"; do
     read -r part mnt <<<"$entry"
     strict_check "$part" "$mnt"

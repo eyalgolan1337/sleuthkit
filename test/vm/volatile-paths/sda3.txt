@@ -1,0 +1,17 @@
+# Volatile paths of / (sda3) for the Best-effort check (test/vm/README.md,
+# "Volatile path list"). One encoded path per line, relative to the root of
+# the file system. Each covers itself and everything below it. A difference
+# under one of these is a warning, not a failure.
+#
+# Logs and the journal: rsyslog, journald, sssd, dnf, audit, sshd's lastlog.
+/var/log
+# State that services rewrite at any time: rpm and dnf databases, systemd
+# timers and random seed, NetworkManager and DHCP leases, logrotate, chrony.
+/var/lib
+# Caches: dnf metadata, man-db, ldconfig's aux cache.
+/var/cache
+# Mail and job queues (postfix, cron, at).
+/var/spool
+# Temporary files. On AlmaLinux 9, /tmp is a directory of / (not tmpfs).
+/tmp
+/var/tmp
