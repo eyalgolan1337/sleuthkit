@@ -44,7 +44,10 @@ The reference Linux toolchain is the devcontainer in `.devcontainer/`: GCC 16.1 
 
 ```sh
 ./bootstrap
-./configure --disable-java --without-libbfio   # Java is probed by default, always disable it; libbfio: see "Known defects and traps", item 2
+./configure --disable-java --without-libbfio \
+    CFLAGS='-g -O2 -fno-strict-aliasing' CXXFLAGS='-g -O2 -fno-strict-aliasing'
+    # Java is probed by default, always disable it; libbfio: see "Known defects and traps", item 2;
+    # -fno-strict-aliasing: item 19 (GCC 16)
 make -j"$(nproc)"                   # library, tools and samples
 make -j"$(nproc)" check             # builds and runs tests/ (and unit_tests/ if enabled)
 ```
@@ -362,3 +365,4 @@ Each item was confirmed by reading the named file.
 16. **The disabled CI workflow does not match this tag.** `build-unix.yml-disabled` passes `--with-libqcow` and `--enable-address-sanitizer`, which 4.15's `configure` does not define, and reads logs from `test/`. Fix it before re-enabling.
 17. **`win32/updateAndBuildAll.py` searches fixed MSBuild paths** (Visual Studio 2019 Community, 2022 Enterprise and a legacy MSBuild 14.0 path) when `MSBuild.exe` is not on `PATH`.
 18. **`--disable-cppunit` does not disable the unit tests, and pkg-config detection does not enable them.** The conditional `CPPUNIT` that controls `SUBDIRS` comes only from the first, unconditional `AM_PATH_CPPUNIT` call in `configure.ac`, which needs `cppunit-config`. `--disable-cppunit`, the pkg-config probe and the link check only set `HAVE_CPPUNIT`, which no `Makefile.am` uses. The link check also sets `CFLAGS="$CPPUNIT_CLFAGS"` (misspelled, always empty), passes the libraries in `LDFLAGS`, and its result is ignored. A build without `cppunit-config` on `PATH` (for example the owner's production build) simply skips `unit_tests/`.
+19. **GCC 16.1 at `-O2` breaks file system autodetection.** In `tsk_fs_open_img_decrypt` (`tsk/fs/fs_open.c`), GCC 16.1 with the default `-g -O2` stores the `name` and `type` of each entry of the local `FS_OPENERS` table but not its `open` function pointer, then calls through it. Every `tsk_fs_open_img`/`tsk_fs_open_vol` call with `TSK_FS_TYPE_DETECT` (and so `fls`, `fsstat` or `icat` without `-f`) jumps through stack garbage and crashes, even on a valid ext4 image; an explicit type such as `-f ext4` works. `-fno-strict-aliasing` or `-fno-tree-dse` brings the stores back, and so does making the table `static const`. A reduced standalone copy of the function did not reproduce it, so whether this is a GCC bug or aliasing undefined behaviour elsewhere in the translation unit is open. `make check` doesn't catch it, because no test autodetects a file system. The devcontainer build (`.devcontainer/build-compile-db.sh`) configures with `CFLAGS` and `CXXFLAGS` set to `-g -O2 -fno-strict-aliasing`; any other GCC 16 build needs the same.
