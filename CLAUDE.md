@@ -28,7 +28,7 @@ Work on the C/C++ library in `tsk/` and its public API (`tsk/libtsk.h`). `tools/
 
 ## Development environment
 
-Build, test, format and lint inside the devcontainer in `.devcontainer/` (GCC 16.1 on Debian trixie, LLVM 22 clangd/clang-format/clang-tidy, bear, gdb, valgrind, cppunit, libewf/libvhdi/libvmdk/afflib, Claude Code, gh). It mounts the repo at the same absolute path as on the host, so `compile_commands.json` paths are valid on both sides.
+Build, test, format and lint inside the devcontainer in `.devcontainer/` (GCC 16.1 on Debian trixie, LLVM 22 clangd/clang-format/clang-tidy, bear, gdb, valgrind, cppunit, libewf/libvhdi/libvmdk/afflib, xfsprogs, Claude Code, gh). It mounts the repo at the same absolute path as on the host, so `compile_commands.json` paths are valid on both sides.
 
 ```sh
 devcontainer up --workspace-folder .                # or VS Code: "Reopen in Container"
