@@ -212,3 +212,6 @@ tests/data
 # clangd
 compile_commands.json
 .cache/
+
+# Output of test/vm/validate.sh (reports, logs, guest builds)
+/build/
