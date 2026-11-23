@@ -40,10 +40,12 @@ RUN curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key \
 
 # Validation setup (test/vm/): the harness self-test builds an ext4 image
 # from a directory (mkfs.ext4 -d), partitions a disk image (sfdisk) and
-# converts it to .vmdk (qemu-img).
+# converts it to .vmdk (qemu-img). The XFS fixture images (test/vm/fixtures/xfs/)
+# are built from protofiles and inspected with xfsprogs, all on image files
+# (no mount, no root), and stored xz-compressed.
 RUN apt-get update \
     && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        e2fsprogs fdisk qemu-utils \
+        e2fsprogs fdisk qemu-utils xfsprogs xz-utils \
     && rm -rf /var/lib/apt/lists/*
 
 # Unversioned tool names. clangd and clang-tidy are wrapped so they resolve

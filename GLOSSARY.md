@@ -55,3 +55,7 @@ _Avoid_: CI, test script, check script
 **Gate**:
 One numbered group of checks in the validate command (build, `make check`, Strict checks, Best-effort checks, format and lint). The validate command passes only if no gate fails.
 _Avoid_: stage, step, phase
+
+**Fixture image**:
+A small committed XFS image, built in the devcontainer from a protofile without mounting, with its expected Manifest. Fixture images cover format variants the Validation VM's disk doesn't have, and need no VM, network or root. Not the Test corpus, which lives on the Validation VM.
+_Avoid_: test image, sample image

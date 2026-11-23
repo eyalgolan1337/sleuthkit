@@ -332,6 +332,80 @@ How the harness was checked against what went into the image (step 5, run on 202
 
 Without `-fno-strict-aliasing` (above), every run of step 4 crashes in `tsk_fs_open_img`.
 
+## XFS fixture images
+
+Small XFS images, committed in `test/vm/fixtures/xfs/`, that tests can use with no Validation VM, network or root. They cover format variants that the Validation VM's disk doesn't have, such as v4 and 512-byte blocks. Each **Fixture image** is committed xz-compressed, as `<variant>.img.xz`, next to its expected Manifest, `<variant>.manifest.xz` (xz-compressed too: the 64 KiB variant's Manifest alone is 5.6 MB of text).
+
+| Variant | `mkfs.xfs` options | Image size | Block size | Directory block | Inode size | Format |
+| --- | --- | --- | --- | --- | --- | --- |
+| `v4` | `-m crc=0` | 320 MiB | 4096 | 4096 | 256 | v4 |
+| `v4-512` | `-m crc=0 -b size=512` | 320 MiB | 512 | 4096 | 256 | v4 |
+| `v5-1k` | `-b size=1024` | 320 MiB | 1024 | 4096 | 512 | v5, bigtime |
+| `v5-64k` | `-b size=65536` | 512 MiB | 65536 | 65536 | 512 | v5, bigtime |
+| `v5` | none (defaults) | 320 MiB | 4096 | 4096 | 512 | v5, bigtime |
+
+Every variant also gets `-m uuid=<fixed>` and `-L tsk-<variant>`. "Defaults" are the defaults of the devcontainer's xfsprogs (Debian trixie, 6.13.0): for v5 that is crc, finobt, sparse inodes, rmapbt, reflink, bigtime, inobtcount and nrext64. The full `xfs_info` output is in a comment at the top of each Manifest. `mkfs.xfs` refuses file systems of 300 MB or less, and with 64 KiB blocks it needs 512 MiB for the minimum log size. The images are sparse when decompressed with `xz -d`, so they take little disk space.
+
+Together the ten files are about 1.6 MB:
+
+| Variant | `.img.xz` | `.manifest.xz` | Entries |
+| --- | --- | --- | --- |
+| `v4` | 84,200 | 14,956 | 1,006 |
+| `v4-512` | 71,144 | 14,604 | 1,006 |
+| `v5-1k` | 106,924 | 18,332 | 1,181 |
+| `v5-64k` | 982,796 | 226,184 | 18,821 |
+| `v5` | 118,184 | 17,912 | 1,181 |
+
+### What the images contain
+
+Every variant has the same tree, with entry counts scaled to its geometry:
+
+| Path | What it covers |
+| --- | --- |
+| `/dirs/shortform` | Short-form directory: entries in the inode (data fork `local`) |
+| `/dirs/block` | Block directory: one directory block |
+| `/dirs/leaf` | Leaf directory: several data blocks and one leaf block |
+| `/dirs/node` | Node directory: more entries than one leaf block holds, so a da-btree node |
+| `/dirs/btree` | B+tree directory: more extents than fit in the inode (data fork `btree`), made by putting a file with one byte of data between directory blocks |
+| `/empty`, `/small.txt`, `/multiblock.bin` | Regular files of 0 bytes, a few bytes and 3.5 blocks |
+| `/sparse.bin` | 512 KiB file with holes at the start, in the middle and at the end |
+| `/setuid`, `/setgid` | Modes 4755 and 2711 |
+| `/xxx…x` | A 255-byte name |
+| `/fifo`, `/chardev`, `/blockdev` | Special files |
+| `/symlink-short`, `/symlink-long` | Symlinks stored in the inode and in a remote block (719-byte target) |
+| `/times/*` | Timestamps at the epoch, before 1970, at both ends of the 32-bit range and, on bigtime variants, after 2038 and at the bigtime maximum (2486), each with nanoseconds |
+
+uid and gid vary, and every inode's atime, mtime, ctime and (v5) crtime are different, fixed values with nanoseconds. A protofile can't express hard links, sockets, the sticky bit, extended attributes or names with white space, so the images have none of these.
+
+### Building and checking the images
+
+```sh
+test/vm/fixtures/xfs/xfs-fixtures.py build [VARIANT...]   # build and check; write <variant>.img.xz and .manifest.xz
+test/vm/fixtures/xfs/xfs-fixtures.py verify [VARIANT...]  # check the committed images against the committed Manifests
+test/vm/fixtures/xfs/xfs-fixtures.py check [VARIANT...]   # rebuild in a temporary directory; compare with the committed Manifests
+```
+
+Run it in the devcontainer, as an ordinary user. It needs `xfsprogs` and `xz` (both in the devcontainer image; rebuild the container if `mkfs.xfs` is missing) and builds `build/vm-tools/compare-manifests` if necessary. Nothing is mounted and nothing needs root. `--keep DIR` also copies the uncompressed images and Manifests to `DIR`. A full `build` takes under a minute, most of it for `xz -9`.
+
+How an image is built:
+
+1. The script generates the tree description of the variant. It writes a protofile (see `mkfs.xfs(8)`, `-p`) with the content of each regular file in a staging directory. The sparse file's holes are holes in the staging file, which `mkfs.xfs` keeps.
+2. `mkfs.xfs -p protofile` makes and fills the image in one step.
+3. A protofile can't set timestamps. The script writes atime, mtime, ctime and crtime into each inode's bytes and recomputes the inode's CRC (v5). It finds the inodes with `xfs_db`'s `ls` and `convert`. It doesn't use `xfs_db`'s `write` for this: in 6.13, writing a bigtime timestamp's `sec` field stores the raw 64-bit value, and negative 32-bit values come out wrong.
+4. The expected Manifest comes from the tree description, except for two fields that `mkfs.xfs` chooses: inode numbers and directory sizes, which are read from the image.
+5. Only when every requested variant has been built and checked are the committed files replaced, so a failure leaves them as they were.
+
+How an image is checked (`build`, `verify` and `check` all do this):
+
+- `xfs_repair -n` finds no problems.
+- The image is read back using `xfs_db` only, with no code shared with the writing side: the tree with `ls`, each inode's fields with `print` (including the timestamps, which `xfs_db` decodes itself, and on v5 that the inode CRC is correct), and file content and remote symlink targets from the blocks listed by `bmap`. The resulting Manifest must equal the expected one under the Strict rules of `compare-manifests`, so every path, type, inode number, mode, uid, gid, size, link count, symlink target, SHA-256, mtime, ctime and crtime is compared (atime is recorded but, as always, not compared). At build time, inode numbers and directory sizes are compared with themselves, because the expected Manifest took them from the image; `check` compares them with the committed Manifest.
+- Each directory under `/dirs` has the format in its name, according to `xfs_db`. Short-form means the data fork is `local`. Block means `extents`, one directory block whose magic is a block directory's (`XD2B` on v4, `XDB3` on v5), and nothing at the leaf offset. Leaf and node mean `extents`, with a leaf1 block or a da-btree node block at the leaf offset (32 GiB). B+tree means the data fork is `btree`. The script prints each directory's format, size and extent count.
+- `/sparse.bin` maps every block that holds data and none in the three holes.
+
+`check` builds every image again in a temporary directory and then also compares the Manifest read back from the new image with the committed one. Regeneration isn't byte-identical (inode generation numbers are random, for example), but the tree, the inode numbers and the timestamps must be identical. The images were built with xfsprogs 6.13.0-2+deb13u1. The Dockerfile doesn't pin that version (Debian drops superseded versions from its archive, which would break the image build). Another xfsprogs version may place inodes differently or change the defaults. `check` then fails, and the images and Manifests must be rebuilt and committed together.
+
+The checks were themselves tested by breaking a committed image (one byte of `/small.txt` changed: `sha256 differs`) and a committed Manifest (a mode changed: `mode differs`); `verify` failed both times. A directory that missed its format (an early B+tree directory on `v5-1k` had only 16 extents) and a sparse file mapped differently than expected both stopped the build.
+
 ## Validation VM
 
 The **Validation VM** is a small AlmaLinux 9.9 virtual machine under VMware Workstation. Its disk holds XFS file systems with different format variants and an ext4 **Control file system**. **Host-side runs** read its `.vmdk` and **Guest-side runs** read its `/dev/sd*` devices, and both are compared with **Ground truth** from the guest's kernel. The scripts in this directory build the VM unattended (issue #13) and control it from the host.
@@ -433,7 +507,7 @@ This prints one PASS/FAIL line per check and exits 1 if any fails. On the host, 
 
 Result on AlmaLinux 9.9 (tested 2026-11-23, kernel 5.14.0-741.24.1.el9_9, xfsprogs 6.4.0-10.el9_9): **XFS v4 mounts.** The kernel is built with `CONFIG_XFS_SUPPORT_V4=y`. `mkfs.xfs -m crc=0` warns "V4 filesystems are deprecated and will not be supported by future versions", and the mount logs "Deprecated V4 format (crc=0) will not be supported beginning with RHEL10", but the mount succeeds.
 
-The Validation VM's disk has no v4 file system. The validation setup plans to cover v4 with fixture images built in the devcontainer (#16).
+The Validation VM's disk has no v4 file system. The [XFS fixture images](#xfs-fixture-images) cover v4 instead.
 
 ### VM scripts
 
