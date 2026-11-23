@@ -8,11 +8,13 @@
 #
 # It starts the Validation VM if it isn't running, copies the static guest
 # build to it, and for each Strict check partition runs the Strict check
-# sequence: generate the Test corpus, sync and freeze, capture Ground truth,
-# flush the block-device cache and drop page caches, check the corpus's XFS
-# formats, the Guest-side run on /dev/sdN, the Host-side run on the .vmdk,
-# unfreeze. Results go to RUN_DIR/vm/ for gate 3, which compares them in the
-# devcontainer. Then it stops the VM, unless --keep-running is given.
+# sequence: generate the Test corpus, sync and freeze, capture Ground truth
+# (with the CLI tool checks' file-system summary and stat records), flush the
+# block-device cache and drop page caches, check the corpus's XFS formats, the
+# Guest-side run on /dev/sdN and its CLI tool checks, the Host-side run on the
+# .vmdk and its CLI tool checks, unfreeze. Results go to RUN_DIR/vm/ for gate
+# 3, which compares them in the devcontainer. Then it stops the VM, unless
+# --keep-running is given.
 #
 # The Host-side run uses the harness of the normal devcontainer build
 # (build/vm-tools/tsk-harness; test/vm/host-build.sh builds it) in a one-off
@@ -34,6 +36,10 @@
 #                                  PATH on PART's device, and put it back after
 #                                  the Host-side run (e.g. sda6:/corpus/links/target.txt)
 #   TSK_VALIDATE_FROZEN_PAUSE=N    wait N seconds in each frozen window
+#   TSK_VALIDATE_WRONG_SUMMARY=PART:FIELD=VALUE
+#                                  gate 3's fsstat checks of PART expect VALUE
+#                                  for FIELD instead of the guest's value
+#                                  (e.g. sda6:block-size=2048)
 # Limits (seconds): TSK_VALIDATE_STEP_TIMEOUT (600) per guest step and per
 # Host-side run,
 # TSK_VALIDATE_FREEZE_LIMIT (1800) after which the guest unfreezes by itself.
@@ -56,6 +62,7 @@ STEP_TIMEOUT=${TSK_VALIDATE_STEP_TIMEOUT:-600}
 FREEZE_LIMIT=${TSK_VALIDATE_FREEZE_LIMIT:-1800}
 BREAK=${TSK_VALIDATE_BREAK:-}
 PAUSE=${TSK_VALIDATE_FROZEN_PAUSE:-}
+WRONG_SUMMARY=${TSK_VALIDATE_WRONG_SUMMARY:-}
 
 rm -rf "$OUT"
 mkdir -p "$OUT"
@@ -142,7 +149,8 @@ vm_is_running && was_running=1
 if [[ -n $was_running ]]; then vmnote "the VM was already running"; else vmnote "started the VM"; fi
 
 log "copying the static guest build to $GUEST_DIR"
-tar -C "$REPO/build/guest-static" -c bin -C "$HERE/guest" tsk-validate.sh |
+tar -C "$REPO/build/guest-static" -c bin -C "$HERE/guest" tsk-validate.sh \
+    -C "$HERE/toolcheck" run-tools.sh |
     gssh "$STEP_TIMEOUT" sh -c "rm -rf $GUEST_DIR && mkdir -p $GUEST_DIR && tar -x -C $GUEST_DIR" ||
     fail_collect "could not copy the static guest build to the guest"
 
@@ -208,6 +216,46 @@ host_run() {
     printf '%s\t%s\t%s\n' host-run "$rc" $((SECONDS - start)) >>"$dir/steps.tsv"
 }
 
+# host_tools <partition>: the CLI tool checks of the Host-side run, in a
+# one-off container like host_run's (host-run.sh --tools): fls, icat, fsstat
+# and istat of the normal build on partition N of the .vmdk, against the
+# Ground truth of the same frozen window, which is fetched first. Results in
+# strict-host/<partition>/tools/, the step's log and exit status in
+# strict-host/<partition>/tool-steps/ (apart from the harness's steps.tsv, so
+# that gate 3 reports them in the CLI tool checks only).
+host_tools() {
+    local part=$1 dir=$OUT/strict-host/$1 gt=$OUT/strict-guest/$1 rc start
+    local gout=$GUEST_DIR/out/$1 log=$OUT/strict-host/$1/tool-steps/host-tools.log
+    mkdir -p "$dir/tools" "$dir/tool-steps"
+    start=$SECONDS
+    if [[ -n $HOST_ERR ]]; then
+        echo "$HOST_ERR" >"$log"
+        rc=125
+    elif ! fetch "$gout/ground-truth.manifest" "$gt/ground-truth.manifest" ||
+        ! fetch "$gout/stat.txt" "$gt/stat.txt"; then
+        echo "could not fetch Ground truth from the guest (see capture-tools)" >"$log"
+        rc=125
+    else
+        log "CLI tool checks, Host side: $TSK_VM_VMDK, partition ${part#sda}"
+        HOST_CONTAINER=tsk-validate-host-tools-$$-$part
+        timeout --foreground "$STEP_TIMEOUT" docker run --rm --init --name "$HOST_CONTAINER" \
+            --network none --user "$(id -u):$(id -g)" --workdir "$REPO" \
+            --mount "type=bind,source=$REPO,target=$REPO,readonly" \
+            --mount "type=bind,source=$TSK_VM_DIR,target=$TSK_VM_DIR,readonly" \
+            --mount "type=bind,source=$gt,target=$gt,readonly" \
+            --mount "type=bind,source=$dir/tools,target=$dir/tools" \
+            "$HOST_IMAGE" "$REPO/test/vm/host-run.sh" --tools "$gt" "$dir/tools" "${part#sda}" \
+            "$TSK_VM_VMDK" "$TSK_VM_DIR" "$REPO" >"$log" 2>&1
+        rc=$?
+        if ((rc == 124)); then
+            echo "timed out after ${STEP_TIMEOUT}s" >>"$log"
+            docker rm -f "$HOST_CONTAINER" >/dev/null 2>&1
+        fi
+        HOST_CONTAINER=
+    fi
+    printf '%s\t%s\t%s\n' host-tools "$rc" $((SECONDS - start)) >>"$dir/tool-steps/steps.tsv"
+}
+
 # --- Strict checks. ---
 # step <part-dir> <tsk-validate.sh command> [args...]: runs one step, its
 # output in <command>.log, its exit status appended to steps.tsv. Returns the
@@ -232,10 +280,16 @@ fetch() { # fetch <guest-file> <host-file>
 # strict-host/<partition>/.
 strict_check() {
     local part=$1 mnt=$2 dev=/dev/$1 dir=$OUT/strict-guest/$1 gout=$GUEST_DIR/out/$1
-    local break_path= rc
-    mkdir -p "$dir"
+    local break_path= rc spots tdir=$dir/tool-steps
+    mkdir -p "$dir" "$tdir"
     : >"$dir/steps.tsv"
+    # The CLI tool checks' guest steps, apart from the harness's.
+    : >"$tdir/steps.tsv"
     log "Strict check: $mnt ($part)"
+    mapfile -t spots < <(spot_check_paths "$part")
+    if [[ $WRONG_SUMMARY == "$part":* ]]; then
+        printf '%s\n' "${WRONG_SUMMARY#*:}" >"$dir/summary-override"
+    fi
     [[ $BREAK == "$part":* ]] && break_path=${BREAK#*:}
 
     step "$dir" check-mount "$dev" "$mnt" || return 0
@@ -253,6 +307,7 @@ strict_check() {
         return 0
     fi
     if step "$dir" capture "$mnt" "$gout/ground-truth.manifest" || (($? == 1)); then
+        step "$tdir" capture-tools "$mnt" "$dev" "$gout" "${spots[@]}"
         if [[ -n $break_path ]]; then
             BROKEN=1
             step "$dir" break
@@ -260,8 +315,10 @@ strict_check() {
         if step "$dir" flush "$dev"; then
             step "$dir" corpus-formats "$mnt" "$dev"
             step "$dir" run "$dev" "$gout/guest.manifest"
+            step "$tdir" run-tools "$dev" "$gout"
         fi
         host_run "$part"
+        host_tools "$part"
         if [[ -n $PAUSE ]]; then
             log "test hook: waiting ${PAUSE}s with $mnt frozen"
             sleep "$PAUSE"
@@ -278,6 +335,12 @@ strict_check() {
 
     fetch "$gout/ground-truth.manifest" "$dir/ground-truth.manifest" || rm -f "$dir/ground-truth.manifest"
     fetch "$gout/guest.manifest" "$dir/guest.manifest" || rm -f "$dir/guest.manifest"
+    # The CLI tool checks' Ground truth and the Guest side's tool output.
+    fetch "$gout/fs-summary.txt" "$dir/fs-summary.txt" || rm -f "$dir/fs-summary.txt"
+    fetch "$gout/stat.txt" "$dir/stat.txt" || rm -f "$dir/stat.txt"
+    rm -rf "$dir/tools"
+    gssh "$STEP_TIMEOUT" sh -c "cd $gout && tar -c tools" | tar -x -C "$dir" ||
+        rm -rf "$dir/tools"
     return 0
 }
 

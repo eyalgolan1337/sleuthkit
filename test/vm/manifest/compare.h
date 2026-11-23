@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <iosfwd>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace tskval {
@@ -22,7 +23,8 @@ enum class Mode { Strict, BestEffort };
 //   <check> <partition> <subject> <difference> [comment]
 // subject is an encoded path, or "*" for every entry (or the whole run).
 // difference is "missing", "extra", a compared field name, or, with subject
-// "*", "error:<code>" for a run that failed as a whole with that error code.
+// "*", a summary field (SUMMARY_FIELDS) or "error:<code>" for a run that
+// failed as a whole with that error code.
 struct KnownFailure {
     std::string check;
     std::string partition;
@@ -83,6 +85,29 @@ struct CompareResult {
 
 CompareResult compare_manifests(const Manifest &ground_truth,
     const Manifest &run, const CompareOptions &options);
+
+// A file-system summary: the superblock facts that fsstat prints and the
+// guest reports (the CLI tool checks, test/vm/toolcheck/), as named fields
+// with canonical values. A producer that couldn't make one sets has_error.
+struct Summary {
+    bool has_error = false;
+    std::string error_code; // [a-z0-9-]+, like a Manifest's
+    std::string error_detail;
+    std::vector<std::pair<std::string, std::string>> fields; // name, value
+};
+
+// The names of a summary's fields. A Known failure's difference may be one of
+// them too.
+extern const char *const SUMMARY_FIELDS[];
+extern const size_t NUM_SUMMARY_FIELDS;
+
+// Compares a run's summary with the expected one field by field, under the
+// Strict check's rules: every difference (a different value, or a field on
+// one side only) is a failure, named after the field, unless a Known failure
+// with the subject * covers it. Whole-run errors and stale Known failures
+// work as in compare_manifests; options.mode is ignored.
+CompareResult compare_summaries(
+    const Summary &expected, const Summary &run, const CompareOptions &options);
 
 // The per-entry report followed by a one-line summary.
 void write_report(std::ostream &out, const CompareResult &result);

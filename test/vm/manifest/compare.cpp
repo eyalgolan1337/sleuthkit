@@ -16,6 +16,10 @@ const char *const COMPARED_FIELDS[] = {"type", "inode", "mode", "uid", "gid",
 const size_t NUM_COMPARED_FIELDS =
     sizeof(COMPARED_FIELDS) / sizeof(COMPARED_FIELDS[0]);
 const int64_t RECENT_CTIME_SECONDS = 10 * 60;
+const char *const SUMMARY_FIELDS[] = {"fs-type", "block-size", "inode-size",
+    "group-count", "uuid", "label", "version"};
+const size_t NUM_SUMMARY_FIELDS =
+    sizeof(SUMMARY_FIELDS) / sizeof(SUMMARY_FIELDS[0]);
 
 Verdict
 CompareResult::verdict() const
@@ -65,6 +69,17 @@ is_compared_field(const std::string &s)
 {
     for (size_t i = 0; i < NUM_COMPARED_FIELDS; ++i) {
         if (s == COMPARED_FIELDS[i]) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool
+is_summary_field(const std::string &s)
+{
+    for (size_t i = 0; i < NUM_SUMMARY_FIELDS; ++i) {
+        if (s == SUMMARY_FIELDS[i]) {
             return true;
         }
     }
@@ -186,11 +201,17 @@ read_known_failures(
                     "' (expected [a-z0-9-]+)");
             }
         }
+        else if (is_summary_field(k.difference)) {
+            if (!k.all_entries) {
+                return fail(
+                    "summary field '" + k.difference + "' needs the subject *");
+            }
+        }
         else if (k.difference != "missing" && k.difference != "extra" &&
             !is_compared_field(k.difference)) {
             return fail("bad difference '" + k.difference +
-                "' (expected missing, extra, a compared field or "
-                "error:<code>)");
+                "' (expected missing, extra, a compared field, a summary "
+                "field or error:<code>)");
         }
         const std::string key =
             k.check + ' ' + k.partition + ' ' + subject + ' ' + k.difference;
@@ -304,6 +325,10 @@ differences(const Manifest &gt, const Manifest &run)
 std::string
 describe(const Difference &d)
 {
+    if (d.path.empty()) { // a summary field
+        return d.difference + " differs: Ground truth " + d.gt_value +
+            ", run " + d.run_value;
+    }
     const std::string path = encode_bytes(d.path);
     if (d.difference == "missing") {
         return path + ": in Ground truth, missing from the run";
@@ -423,16 +448,20 @@ severity_tag(Severity s)
     return "?    ";
 }
 
-} // namespace
+// Whether a Manifest or summary records a failure as a whole.
+struct WholeRun {
+    bool has_error;
+    const std::string &code;
+    const std::string &detail;
+};
 
-CompareResult
-compare_manifests(const Manifest &ground_truth, const Manifest &run,
-    const CompareOptions &options)
+// The rules shared by compare_manifests and compare_summaries: whole-run
+// errors, then each difference as a Known failure, a Best-effort warning or
+// a failure, then stale Known failures.
+void
+judge(CompareResult &r, const WholeRun &ground_truth, const WholeRun &run,
+    const std::vector<Difference> &diffs, const CompareOptions &options)
 {
-    CompareResult r;
-    r.ground_truth_entries = ground_truth.entries.size();
-    r.run_entries = run.entries.size();
-
     // The Known failures of this check and partition; used[i] once one of
     // them has tolerated a difference.
     std::vector<const KnownFailure *> known;
@@ -445,16 +474,15 @@ compare_manifests(const Manifest &ground_truth, const Manifest &run,
 
     if (ground_truth.has_error) {
         add(r, Severity::Failure, "", "ground-truth-error",
-            "Ground truth capture failed (" + ground_truth.error_code + ": " +
-                display_text(ground_truth.error_detail) +
-                "); nothing was compared");
-        return r;
+            "Ground truth capture failed (" + ground_truth.code + ": " +
+                display_text(ground_truth.detail) + "); nothing was compared");
+        return;
     }
 
     if (run.has_error) {
-        const std::string difference = ERROR_PREFIX + run.error_code;
-        const std::string what = "the run failed as a whole (" +
-            run.error_code + ": " + display_text(run.error_detail) +
+        const std::string difference = ERROR_PREFIX + run.code;
+        const std::string what = "the run failed as a whole (" + run.code +
+            ": " + display_text(run.detail) +
             "), so its entries were not compared";
         bool tolerated = false;
         for (size_t i = 0; i < known.size(); ++i) {
@@ -479,7 +507,7 @@ compare_manifests(const Manifest &ground_truth, const Manifest &run,
         }
     }
     else {
-        for (const Difference &d : differences(ground_truth, run)) {
+        for (const Difference &d : diffs) {
             const int known_index = match_known(d, known);
             if (known_index >= 0) {
                 const auto i = static_cast<size_t>(known_index);
@@ -508,6 +536,68 @@ compare_manifests(const Manifest &ground_truth, const Manifest &run,
                     known_text(*known[i]));
         }
     }
+}
+
+// The differences between two summaries, field by field.
+std::vector<Difference>
+summary_differences(const Summary &expected, const Summary &run)
+{
+    static const std::string NONE = "(none)";
+    std::map<std::string, std::string> run_fields(
+        run.fields.begin(), run.fields.end());
+    std::map<std::string, std::string> expected_fields(
+        expected.fields.begin(), expected.fields.end());
+    std::vector<Difference> out;
+    for (const auto &f : expected.fields) {
+        const auto r = run_fields.find(f.first);
+        const std::string &value = r == run_fields.end() ? NONE : r->second;
+        if (value != f.second) {
+            out.push_back({"", f.first, f.second, value, nullptr, nullptr});
+        }
+    }
+    for (const auto &f : run.fields) {
+        if (expected_fields.find(f.first) == expected_fields.end()) {
+            out.push_back({"", f.first, NONE, f.second, nullptr, nullptr});
+        }
+    }
+    return out;
+}
+
+} // namespace
+
+CompareResult
+compare_manifests(const Manifest &ground_truth, const Manifest &run,
+    const CompareOptions &options)
+{
+    CompareResult r;
+    r.ground_truth_entries = ground_truth.entries.size();
+    r.run_entries = run.entries.size();
+    judge(r,
+        {ground_truth.has_error, ground_truth.error_code,
+            ground_truth.error_detail},
+        {run.has_error, run.error_code, run.error_detail},
+        ground_truth.has_error || run.has_error
+            ? std::vector<Difference>()
+            : differences(ground_truth, run),
+        options);
+    return r;
+}
+
+CompareResult
+compare_summaries(
+    const Summary &expected, const Summary &run, const CompareOptions &options)
+{
+    CompareResult r;
+    r.ground_truth_entries = expected.fields.size();
+    r.run_entries = run.fields.size();
+    CompareOptions strict = options;
+    strict.mode = Mode::Strict;
+    judge(r, {expected.has_error, expected.error_code, expected.error_detail},
+        {run.has_error, run.error_code, run.error_detail},
+        expected.has_error || run.has_error
+            ? std::vector<Difference>()
+            : summary_differences(expected, run),
+        strict);
     return r;
 }
 

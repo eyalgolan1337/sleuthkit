@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # The build that the Host-side run of the Strict checks uses
 # (test/vm/README.md, "Gate 3: Strict checks"): the normal devcontainer build
-# of the library and build/vm-tools/tsk-harness, which reads .vmdk files
-# through libvmdk. Run in the devcontainer, from anywhere:
+# of the library, build/vm-tools/tsk-harness, which reads .vmdk files
+# through libvmdk, and the CLI tool checks' fls, icat, fsstat, istat and mmls.
+# Run in the devcontainer, from anywhere:
 #
 #   test/vm/host-build.sh            # incremental
 #   test/vm/host-build.sh --fresh    # bootstrap and configure first
@@ -11,8 +12,8 @@
 # VM's results, because the Host-side run happens then, before gate 1 builds
 # the tree. An unconfigured tree, or one configured by another compiler, gets
 # the full build of .devcontainer/build-compile-db.sh --fresh; otherwise only
-# the library and the harness are rebuilt. Exit status 0 if the harness was
-# built.
+# the library, those tools and the harness are rebuilt. Exit status 0 if they
+# were built.
 set -euo pipefail
 
 REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
@@ -43,6 +44,12 @@ else
     echo "== library"
     make -j"$(nproc)" -C tsk
 fi
+# The CLI tool checks' tools, built before the harness: if they fail, there
+# is no harness, and the Host-side run reports that instead of running old
+# tools.
+echo "== fls, icat, fsstat, istat and mmls"
+make -j"$(nproc)" -C tools/fstools fls icat fsstat istat
+make -j"$(nproc)" -C tools/vstools mmls
 echo "== harness"
 make -j"$(nproc)" -f test/vm/manifest/manifest.mk "$HARNESS"
 ls -l "$HARNESS"

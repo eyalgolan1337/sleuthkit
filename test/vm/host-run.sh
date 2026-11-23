@@ -5,6 +5,7 @@
 # mounted read-only:
 #
 #   test/vm/host-run.sh OUT PARTITION IMAGE [READ-ONLY-DIR...]
+#   test/vm/host-run.sh --tools GT-DIR OUT PARTITION IMAGE [READ-ONLY-DIR...]
 #
 # First it tries to write to IMAGE (an open for appending, which writes no
 # data) and to create a file in each READ-ONLY-DIR. Each attempt must fail:
@@ -16,13 +17,25 @@
 #
 # Exit status: the harness's (0 complete, 1 incomplete, 2 error), 3 if
 # something was writable, 127 if the harness isn't built.
+#
+# With --tools, it runs the CLI tool checks instead of the harness, after
+# the same write attempts: test/vm/toolcheck/run-tools.sh with fls, icat,
+# fsstat, istat and mmls of the normal build (tools/fstools, tools/vstools),
+# reading GT-DIR's ground-truth.manifest and stat.txt and writing to the
+# directory OUT. Exit status: run-tools.sh's (0 ran, 2 error), 3 and 127 as
+# above.
 set -uo pipefail
 
 REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 HARNESS=$REPO/build/vm-tools/tsk-harness
 
+gt_dir=
+if [[ ${1:-} == --tools ]]; then
+    gt_dir=${2:-}
+    shift 2
+fi
 if (($# < 3)); then
-    sed -n '2,18p' "$0" >&2
+    sed -n '2,26p' "$0" >&2
     exit 2
 fi
 out=$1 partition=$2 image=$3
@@ -60,6 +73,18 @@ done
 if ((writable)); then
     echo "host-run.sh: refusing to run: the paths above must be read-only (mounted :ro)" >&2
     exit 3
+fi
+
+if [[ -n $gt_dir ]]; then
+    for t in fstools/fls fstools/icat fstools/fsstat fstools/istat vstools/mmls; do
+        [[ -x $REPO/tools/$t ]] || {
+            echo "host-run.sh: $REPO/tools/$t is not built (test/vm/host-build.sh)" >&2
+            exit 127
+        }
+    done
+    PATH=$REPO/tools/fstools:$REPO/tools/vstools:$PATH exec \
+        "$REPO/test/vm/toolcheck/run-tools.sh" "$image" "$out" \
+        "$gt_dir/ground-truth.manifest" "$gt_dir/stat.txt" "$partition"
 fi
 
 [[ -x $HARNESS ]] || {
