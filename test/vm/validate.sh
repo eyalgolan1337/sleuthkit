@@ -2,11 +2,13 @@
 # The validate command: one pass or fail for the current working tree.
 # See test/vm/README.md. Run from anywhere, on the host or in the devcontainer.
 #
-#   test/vm/validate.sh [--base REF] [--fresh]
+#   test/vm/validate.sh [--base REF] [--fresh] [--keep-running]
 #
-# Every gate runs even if an earlier one fails. The report goes to
-# build/validate/<UTC time>/report.md (build/validate/latest/report.md) and is
-# printed at the end. Exit status: 0 if no gate failed, 1 if a gate failed,
+# On the host, it first collects the Validation VM's results for gate 3 (the
+# static guest build in the devcontainer, then test/vm/collect-vm.sh), then
+# runs every gate in the devcontainer. Every gate runs even if an earlier one
+# fails. The report goes to build/validate/<UTC time>/report.md
+# (build/validate/latest/report.md) and is printed at the end. Exit status: 0 if no gate failed, 1 if a gate failed,
 # 2 if the command itself could not run.
 set -uo pipefail
 
@@ -14,6 +16,19 @@ VALIDATE_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 VALIDATE_LIB=$VALIDATE_DIR/lib
 REPO=$(cd "$VALIDATE_DIR/../.." && pwd)
 DEVCONTAINER_CLI_VERSION=0.91.0
+# shellcheck source=lib/report.sh
+source "$VALIDATE_LIB/report.sh"
+
+WINDOWS_NOTE="**Windows (MSVC) build: NOT VERIFIED.** This command builds and tests with GCC 16.1 on Linux only. MSVC 19.41 (Visual Studio 2022, \`win32/\`) was not run, so a pass here says nothing about the Windows build."
+
+# The gate numbers, from test/vm/gates/gate<n>.sh, in order.
+list_gates() {
+    local g
+    for g in "$VALIDATE_DIR"/gates/gate*.sh; do
+        g=${g##*/gate}
+        printf '%s\n' "${g%.sh}"
+    done | sort -V
+}
 
 usage() {
     cat <<EOF
@@ -26,12 +41,16 @@ failed, 2 if validation could not run.
 Options:
   --base REF   compare with the merge-base of REF and HEAD (default: develop)
   --fresh      re-run bootstrap and configure before building
+  --keep-running
+               leave the Validation VM running afterwards (by default the
+               command starts it if needed and stops it when done with it)
   -h, --help   show this help
 EOF
 }
 
 BASE=develop
 VALIDATE_FRESH=
+KEEP_RUNNING=
 ARGS=("$@")
 while (($#)); do
     case $1 in
@@ -41,6 +60,7 @@ while (($#)); do
         shift 2
         ;;
     --fresh) VALIDATE_FRESH=1; shift ;;
+    --keep-running) KEEP_RUNNING=1; shift ;;
     -h | --help) usage; exit 0 ;;
     *) echo "unknown option: $1" >&2; usage >&2; exit 2 ;;
     esac
@@ -92,6 +112,65 @@ devcontainer_folder() {
     printf '%s\n' "$main"
 }
 
+# Creates build/validate/<UTC time>/ (or <time>-2, ... for two runs started in
+# the same second) and sets RUN_NAME and RUN_DIR. TSK_VALIDATE_RUN_NAME names
+# a run directory the host already created.
+make_run_dir() {
+    mkdir -p "$REPO/build/validate"
+    if [[ -n ${TSK_VALIDATE_RUN_NAME:-} ]]; then
+        RUN_NAME=$TSK_VALIDATE_RUN_NAME
+        mkdir -p "$REPO/build/validate/$RUN_NAME"
+    else
+        local stem n=1
+        RUN_NAME=$(date -u +%Y%m%dT%H%M%SZ)
+        stem=$RUN_NAME
+        while ! mkdir "$REPO/build/validate/$RUN_NAME" 2>/dev/null; do
+            n=$((n + 1))
+            RUN_NAME=$stem-$n
+        done
+    fi
+    RUN_DIR=$REPO/build/validate/$RUN_NAME
+    mkdir -p "$RUN_DIR/logs"
+    ln -sfn "$RUN_NAME" "$REPO/build/validate/latest"
+}
+
+# Interrupted on the host before any gate ran: a report with every gate NOT RUN.
+host_interrupted() {
+    trap - INT TERM
+    echo "Interrupted; writing a partial report." >&2
+    report_init
+    local gates=()
+    mapfile -t gates < <(list_gates)
+    report_mark_interrupted "${gates[@]}"
+    report_write "$RUN_DIR/report.md" \
+        "- Interrupted on the host while collecting the Validation VM's results, before any gate ran. Logs: \`build/validate/$RUN_NAME/logs/\`
+
+$WINDOWS_NOTE" \
+        "" interrupted
+    cat "$RUN_DIR/report.md"
+    exit 130
+}
+
+# On the host, before the gates: the Validation VM is reachable only from
+# here (vmrun, its SSH key), so its results are collected now and gate 3
+# compares them in the devcontainer. The static guest build runs in the
+# devcontainer first. Failures here don't stop the command: gate 3 reports them.
+host_collect_vm() {
+    make_run_dir
+    trap host_interrupted INT TERM
+    local fresh=() keep=() rc
+    [[ -n $VALIDATE_FRESH ]] && fresh=(--fresh)
+    [[ -n $KEEP_RUNNING ]] && keep=(--keep-running)
+    echo "Building the static guest tools in the devcontainer (log: build/validate/$RUN_NAME/logs/vm-guest-build.log)" >&2
+    devcontainer_cli exec --workspace-folder "$WORKSPACE" \
+        "$REPO/test/vm/guest-build.sh" "${fresh[@]}" >"$RUN_DIR/logs/vm-guest-build.log" 2>&1
+    echo "Collecting the Validation VM's results for gate 3 (log: build/validate/$RUN_NAME/logs/vm-collect.log)" >&2
+    "$VALIDATE_DIR/collect-vm.sh" "$RUN_DIR" "${keep[@]}" >"$RUN_DIR/logs/vm-collect.log" 2>&1
+    rc=$?
+    ((rc == 130)) && host_interrupted
+    trap - INT TERM
+}
+
 # On the host: never build here. Start the devcontainer if needed and re-run
 # this command inside it. The repo is mounted at the same path in both.
 if ! in_devcontainer; then
@@ -112,8 +191,10 @@ if ! in_devcontainer; then
         exit 2
     fi
     rm -f "$up_log"
+    host_collect_vm
     devcontainer_cli exec --workspace-folder "$WORKSPACE" \
-        env TSK_VALIDATE_DELEGATED=1 "$REPO/test/vm/validate.sh" "${ARGS[@]}"
+        env TSK_VALIDATE_DELEGATED=1 TSK_VALIDATE_RUN_NAME="$RUN_NAME" \
+        TSK_VALIDATE_VM_COLLECTED=1 "$REPO/test/vm/validate.sh" "${ARGS[@]}"
     rc=$?
     case $rc in
     0 | 1 | 2 | 130) exit "$rc" ;;
@@ -126,30 +207,17 @@ fi
 
 # --- In the devcontainer from here on. ---
 cd "$REPO" || exit 2
-# shellcheck source=lib/report.sh
-source "$VALIDATE_LIB/report.sh"
 # shellcheck source=lib/changes.sh
 source "$VALIDATE_LIB/changes.sh"
-ALL_GATES=()
-while IFS= read -r gate; do
+mapfile -t ALL_GATES < <(list_gates)
+for n in "${ALL_GATES[@]}"; do
     # shellcheck source=/dev/null
-    source "$gate"
-    gate=${gate##*/gate}
-    ALL_GATES+=("${gate%.sh}")
-done < <(printf '%s\n' "$VALIDATE_DIR"/gates/gate*.sh | sort -V)
+    source "$VALIDATE_DIR/gates/gate$n.sh"
+done
 
 JOBS=$(nproc)
 STARTED=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-RUN_NAME=$(date -u +%Y%m%dT%H%M%SZ)
-mkdir -p "$REPO/build/validate"
-run_stem=$RUN_NAME
-n=1
-# Two runs started in the same second get <time>, <time>-2, ...
-while ! mkdir "$REPO/build/validate/$RUN_NAME" 2>/dev/null; do
-    n=$((n + 1))
-    RUN_NAME=$run_stem-$n
-done
-RUN_DIR=$REPO/build/validate/$RUN_NAME
+make_run_dir
 REPORT=$RUN_DIR/report.md
 BUILD_OK=$RUN_DIR/.report/build-ok
 export REPO RUN_DIR JOBS VALIDATE_LIB VALIDATE_FRESH BUILD_OK
@@ -157,7 +225,6 @@ export REPO RUN_DIR JOBS VALIDATE_LIB VALIDATE_FRESH BUILD_OK
 changes_init "$BASE" || exit 2
 export BASE_REF MERGE_BASE
 report_init
-ln -sfn "$RUN_NAME" "$REPO/build/validate/latest"
 
 dirty=no
 [[ -n $(git status --porcelain --untracked-files=normal) ]] && dirty=yes
@@ -172,13 +239,20 @@ else
     ran_in="the devcontainer"
 fi
 
+if [[ -n ${TSK_VALIDATE_VM_COLLECTED:-} ]]; then
+    vm_line="its results were collected on the host before the gates (\`logs/vm-collect.log\`) and are checked in gate 3, which also says whether the collection succeeded"
+else
+    vm_line="not used: this run started inside the devcontainer, which can't reach the VM, so gate 3 fails. Run \`test/vm/validate.sh\` on the host."
+fi
+
 HEADER="- Started: $STARTED
 - Tree: \`$REPO\`, branch \`$(git branch --show-current)\`, HEAD \`$(git rev-parse --short HEAD)\`, uncommitted or untracked changes: $dirty
 - Base: \`$BASE_REF\`, merge-base \`$(git rev-parse --short "$MERGE_BASE")\`; $nchanged changed file(s), listed at the end
 - Ran in: $ran_in ($(gcc --version | head -n1 | sed 's/^gcc ([^)]*) /GCC /'), $(clang-format --version | grep -oE 'clang-format version [0-9.]+'), $(clang-tidy --version | grep -oE 'LLVM version [0-9.]+' | sed 's/LLVM/clang-tidy/'))
 - Logs: \`build/validate/$RUN_NAME/logs/\`
+- Validation VM: $vm_line
 
-**Windows (MSVC) build: NOT VERIFIED.** This command builds and tests with GCC 16.1 on Linux only. MSVC 19.41 (Visual Studio 2022, \`win32/\`) was not run, so a pass here says nothing about the Windows build."
+$WINDOWS_NOTE"
 
 FOOTER="## Changed files since \`$BASE_REF\` ($nchanged)
 
