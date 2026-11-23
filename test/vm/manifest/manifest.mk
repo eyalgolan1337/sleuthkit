@@ -1,8 +1,9 @@
 # Builds the validation setup's C++ tools: the Manifest library, the
 # comparison step, Ground truth capture (test/vm/capture/), the harness
-# (test/vm/harness/), the Test corpus generator (test/vm/corpus/) and their
-# self-tests (test/vm/README.md, "Manifests and
-# the comparison step", "The harness and Ground truth capture"). Plain GNU
+# (test/vm/harness/), the Test corpus generator (test/vm/corpus/), the CLI
+# tool checks' check-tool (test/vm/toolcheck/) and their self-tests
+# (test/vm/README.md, "Manifests and the comparison step", "The harness and
+# Ground truth capture", "Gate 3: CLI tool checks"). Plain GNU
 # make, not part of the autotools build. Run it from the repository root,
 # after building the library (make), which the harness links:
 #
@@ -20,6 +21,7 @@ SRC_DIR := $(patsubst %/,%,$(dir $(lastword $(MAKEFILE_LIST))))
 CAPTURE_DIR := $(SRC_DIR)/../capture
 HARNESS_DIR := $(SRC_DIR)/../harness
 CORPUS_DIR := $(SRC_DIR)/../corpus
+TOOLCHECK_DIR := $(SRC_DIR)/../toolcheck
 BUILD_DIR ?= build/vm-tools
 
 CXX ?= g++
@@ -38,9 +40,12 @@ CAPTURE := $(BUILD_DIR)/capture-ground-truth
 HARNESS := $(BUILD_DIR)/tsk-harness
 HARNESS_SELFTEST := $(BUILD_DIR)/harness-selftest
 CORPUS := $(BUILD_DIR)/tsk-corpus
+CHECK_TOOL := $(BUILD_DIR)/check-tool
+TOOLCHECK_OBJS := $(BUILD_DIR)/toolcheck.o $(BUILD_DIR)/toolcheck_cli.o
 
 .PHONY: all check clean capture-static harness-static corpus-static
-all: $(LIB) $(COMPARE) $(SELFTEST) $(CAPTURE) $(HARNESS) $(HARNESS_SELFTEST) $(CORPUS)
+all: $(LIB) $(COMPARE) $(SELFTEST) $(CAPTURE) $(HARNESS) $(HARNESS_SELFTEST) \
+    $(CORPUS) $(CHECK_TOOL)
 
 check: $(SELFTEST) $(HARNESS_SELFTEST)
 	$(SELFTEST)
@@ -69,6 +74,13 @@ $(BUILD_DIR)/capture.o $(BUILD_DIR)/capture_main.o $(BUILD_DIR)/capture_selftest
 $(BUILD_DIR)/%.o: $(CORPUS_DIR)/%.cpp | $(BUILD_DIR) $(DEP_DIR)
 	$(COMPILE)
 $(BUILD_DIR)/corpus_selftest.o: CPPFLAGS += -I$(abspath $(SRC_DIR)) -I$(abspath $(CAPTURE_DIR))
+
+# The CLI tool checks (test/vm/toolcheck/): parse the output of fls, icat,
+# fsstat and istat for the comparison step. No libtsk: only the tools' output
+# reaches them.
+$(BUILD_DIR)/%.o: $(TOOLCHECK_DIR)/%.cpp | $(BUILD_DIR) $(DEP_DIR)
+	$(COMPILE)
+$(TOOLCHECK_OBJS) $(BUILD_DIR)/toolcheck_main.o $(BUILD_DIR)/toolcheck_selftest.o: CPPFLAGS += -I$(abspath $(SRC_DIR))
 
 # The harness (test/vm/harness/) may use only the public libtsk API, so it is
 # compiled against a staged install of the library (make install with
@@ -111,10 +123,15 @@ $(COMPARE): $(BUILD_DIR)/compare_main.o $(LIB)
 	$(CXX) $(CXXFLAGS) $(LDFLAGS) -o $@ $^
 
 SELFTEST_OBJS := $(BUILD_DIR)/selftest.o $(BUILD_DIR)/sha256_selftest.o \
-    $(BUILD_DIR)/capture_selftest.o $(BUILD_DIR)/corpus_selftest.o
+    $(BUILD_DIR)/capture_selftest.o $(BUILD_DIR)/corpus_selftest.o \
+    $(BUILD_DIR)/toolcheck_selftest.o
 $(SELFTEST_OBJS): CPPFLAGS += $(CPPUNIT_CFLAGS)
-$(SELFTEST): $(SELFTEST_OBJS) $(BUILD_DIR)/capture.o $(BUILD_DIR)/corpus.o $(LIB)
+$(SELFTEST): $(SELFTEST_OBJS) $(BUILD_DIR)/capture.o $(BUILD_DIR)/corpus.o \
+    $(TOOLCHECK_OBJS) $(LIB)
 	$(CXX) $(CXXFLAGS) $(LDFLAGS) -o $@ $^ $(CPPUNIT_LIBS)
+
+$(CHECK_TOOL): $(BUILD_DIR)/toolcheck_main.o $(TOOLCHECK_OBJS) $(LIB)
+	$(CXX) $(CXXFLAGS) $(LDFLAGS) -o $@ $^
 
 $(CAPTURE): $(BUILD_DIR)/capture_main.o $(BUILD_DIR)/capture.o $(LIB)
 	$(CXX) $(CXXFLAGS) $(LDFLAGS) -o $@ $^
@@ -163,7 +180,7 @@ $(BUILD_DIR) $(DEP_DIR):
 clean:
 	rm -f $(BUILD_DIR)/*.o $(DEP_DIR)/*.Po $(LIB) $(COMPARE) $(SELFTEST) $(CAPTURE) \
 	    $(HARNESS) $(HARNESS_SELFTEST) $(TSK_STAGE_STAMP) $(CAPTURE_STATIC) \
-	    $(HARNESS_STATIC) $(CORPUS) $(CORPUS_STATIC)
+	    $(HARNESS_STATIC) $(CORPUS) $(CORPUS_STATIC) $(CHECK_TOOL)
 	rm -rf $(TSK_STAGE)
 
 -include $(wildcard $(DEP_DIR)/*.Po)

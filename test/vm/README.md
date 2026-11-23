@@ -37,7 +37,7 @@ Run it on the host. Inside the devcontainer the command still runs every gate, b
 |------|----------------|--------|
 | 1 | Clean build of the library, tools, samples, test programs and the validation setup's C++ tools under `bear` (`.devcontainer/build-compile-db.sh`), which also regenerates `compile_commands.json`. The [static guest build](#the-static-guest-build). Then a syntax-only compile of each changed C++ file as C++17 and as C++20, the [comparison step's self-test](#gate-1-comparison-step-self-test) and the [harness self-test](#gate-1-harness-self-test). | Implemented |
 | 2 | The full `make check`. | Implemented |
-| 3 | **Strict checks** of `/data`, `/data-compat` and the **Control file system** on the Validation VM: [Gate 3: Strict checks](#gate-3-strict-checks). | Implemented |
+| 3 | **Strict checks** of `/data`, `/data-compat` and the **Control file system** on the Validation VM, each with its [CLI tool checks](#gate-3-cli-tool-checks) (`fls`, `icat`, `fsstat`, `istat`): [Gate 3: Strict checks](#gate-3-strict-checks). | Implemented |
 | 4 | **Best-effort checks** | Not yet implemented (#21) |
 | 5 | `clang-format` and `clang-tidy` on changed lines only. | Implemented |
 
@@ -81,9 +81,11 @@ Until XFS support exists, `/data` and `/data-compat` are [Known failures](#known
 3. Capture Ground truth with `capture-ground-truth` (static), into `/root/tsk-validate/out/` on `/`.
 4. `blockdev --flushbufs /dev/sdaN` and `echo 3 > /proc/sys/vm/drop_caches`, so TSK reads the disk and not stale cache pages (#9).
 5. On XFS, check with `xfs_db` that the corpus's directories and its extent B+tree file have the on-disk formats they were made for (step `corpus-formats`; see [Checking the XFS formats](#checking-the-xfs-formats)).
-6. The Guest-side run: `tsk-harness /dev/sdaN` (static).
-7. The Host-side run, on the host: `tsk-harness --partition N <vm-dir>/tsk-xfs-alma9.vmdk` in a one-off container (below).
+6. The Guest-side run: `tsk-harness /dev/sdaN` (static), then its [CLI tool checks](#gate-3-cli-tool-checks): `fls`, `icat`, `fsstat` and `istat` (static) on `/dev/sdaN`.
+7. The Host-side run, on the host: `tsk-harness --partition N <vm-dir>/tsk-xfs-alma9.vmdk` in a one-off container (below), then its CLI tool checks on partition N of the `.vmdk` in a second one.
 8. `fsfreeze --unfreeze`.
+
+Step 3 also captures the CLI tool checks' Ground truth: the guest's file-system summary and `stat` of the `istat` spot-check paths.
 
 **The Host-side run's one-off container.** `collect-vm.sh` runs `docker run --rm --init --network none` of the devcontainer's own image (the image of the running devcontainer of this checkout, found by its `devcontainer.local_folder` label), as the host user, with three bind mounts at their host paths:
 
@@ -103,6 +105,7 @@ The devcontainer configuration (`.devcontainer/devcontainer.json`) has no VM mou
 
 - `TSK_VALIDATE_BREAK=PART:PATH`, for example `sda6:/corpus/links/target.txt`: after Ground truth is captured, flip one byte of that file's first block directly on `/dev/PART`, and put it back after the Host-side run (also on failures and interrupts). Both runs read the changed byte, so both the Guest side and the Host side of gate 3 must then fail and name the entry and the field: `/corpus/links/target.txt` and `sha256` (three times: `/corpus/links/hard-1` and `/corpus/links/sub/hard-2` are the same file).
 - `TSK_VALIDATE_FROZEN_PAUSE=N`: wait N seconds in each frozen window, to interrupt the command there.
+- `TSK_VALIDATE_WRONG_SUMMARY=PART:FIELD=VALUE`, for example `sda6:block-size=2048`: the `fsstat` checks of `PART`, Guest side and Host side, expect `VALUE` for that [summary field](#gate-3-cli-tool-checks) instead of the guest's own value, so both must fail and name the field. Each of the two checks also reports a warning that the hook was active.
 - `TSK_VALIDATE_IMAGE=IMAGE`: run the Host-side runs in one-off containers of IMAGE instead of the running devcontainer's image.
 
 **Reading gate 3 in the report.** The gate has one check for the VM and two per partition, Guest side and Host side:
@@ -110,6 +113,40 @@ The devcontainer configuration (`.devcontainer/devcontainer.json`) has no VM mou
 - `Validation VM and the static guest tools`: what happened to the VM (started, already running, stopped, left running), the image of the Host-side runs' one-off containers (or why there are none), and one note per static tool that started in the guest. It fails if the collection couldn't run, for example no VM, a failed static guest build, or a run inside the devcontainer.
 - `Strict check, Guest side: <mount> (<partition>)`: a failed step of the sequence is a failure naming the step. The Test corpus generator's record: one note listing the features it made, and one note per feature it couldn't make on this file system, with the reason (for example `not made here: reflinks: FICLONE: Operation not supported; plain copies instead`). On XFS, one note per path checked by `corpus-formats` with its format, inode, size and extent count, or a failure if a path doesn't have the format it was made for. Then the comparison's findings: each difference is a `failure:` naming the encoded path, the field and both values, then a summary note with the counts, then one `Known failure:` note per tolerated Known failure with its comment from the list. A stale Known failure (listed, but the difference is gone) is a failure. The full per-entry comparison, each step's output and the step timings are in the check's log (`logs/gate3-strict-guest-sdaN.log`). The Manifests are in `vm/strict-guest/sdaN/`.
 - `Strict check, Host side: <mount> (<partition>), .vmdk`: one note per refused write in the one-off container (`write refused, <path>: Read-only file system`), a failure for a writable path or a failed Host-side run (no Docker, no devcontainer image, a failed `host-build.sh`: see `logs/vm-host-build.log`), then the comparison's findings, as for the Guest side, against the same Ground truth. The steps the two runs share (freeze, capture, unfreeze) are reported by the Guest side only. Log: `logs/gate3-strict-host-sdaN.log`; the Manifest: `vm/strict-host/sdaN/host.manifest`.
+
+### Gate 3: CLI tool checks
+
+Each Strict check also checks TSK's command-line tools as consumers of the API, on the same frozen file system, against Ground truth taken in the same frozen window. There are four checks per side and partition, reported separately from the harness's: `CLI tool check, Guest side: <tool>, <mount> (<partition>)` and `CLI tool check, Host side: ...`. Their names in the [Known failure list](#known-failure-list) are `<tool>-guest` and `<tool>-host`.
+
+| Tool | What runs | Compared with |
+| --- | --- | --- |
+| `fls` | `fls -r -p -u` | Ground truth: every path but `/`, and its type. fls prints each control character of a name (0x00 to 0x1F, 0x7F) as `^`, so Ground truth paths are compared in that form too. libtsk's virtual entries (`$OrphanFiles` and anything below it) are left out, as in the harness. A type is fls's letter when its name type and metadata type agree (`r/r`, `d/d`, `l/l`, ...), otherwise `other`. |
+| `icat` | `icat` of the root directory's inode, which shows whether icat can open the file system at all, then `icat <inode> \| sha256sum` once per regular file inode of Ground truth (hard links share one) | Ground truth: the SHA-256 of every regular file |
+| `fsstat` | `fsstat` | The guest's own file-system summary, in seven fields: `fs-type`, `block-size`, `inode-size`, `group-count` (ext: block groups, XFS: allocation groups), `uuid`, `label` (empty if none) and `version` (ext: the revision level, XFS: 4 or 5). The guest writes `blkid -p -o export` and `dumpe2fs -h` (ext2/3/4) or `xfs_info` (XFS). |
+| `istat` | `istat <inode>` for each spot-check path's inode | The guest's `stat` of each path in the committed list [`test/vm/istat-spot-checks.txt`](istat-spot-checks.txt): inode, type, permission bits, uid, gid, size, link count, symlink target (`readlink`), mtime, ctime and crtime, compared as Manifest fields |
+
+The output formats are upstream's; the checks parse them as they are. The tools run with `TZ=UTC`, because `istat` prints times in local time. Two quirks of 4.15.0's output matter here:
+
+- `istat` prints a time at or before the epoch as `0000-00-00 00:00:00`, read as 0, so a file older than 1970 differs from `stat`. Leave such files out of the spot checks.
+- ext `fsstat` prints the UUID (`Volume ID`) as two little-endian 64-bit numbers in hex without leading zeros, so its digits are the UUID's bytes in reverse order, sometimes fewer than 32. It counts as the guest's UUID if it is exactly how that UUID prints, as a UUID if it has all 32 digits, and otherwise as `Volume ID <digits>`. The `fsstat` check reads only ext2/3/4 output for now; the XFS work (#11) teaches it XFS's.
+
+**The istat spot checks** are a fixed list of paths per partition, not inode numbers, because the corpus is recreated, with new inode numbers, in every run. In the frozen window the guest runs `stat` on each listed path, and `istat` runs on the inode number that `stat` reports. A listed path that doesn't exist fails the check. Paths are printable ASCII without spaces or `%`.
+
+**Where it runs.** `test/vm/toolcheck/run-tools.sh` runs all four tools on one file system and keeps their output, exit status and standard error. In the guest it runs from `/root/tsk-validate/` with the static guest build (`tsk-validate.sh run-tools`, right after the Guest-side run) into `vm/strict-guest/sdaN/tools/`. On the host it runs in a second one-off container (`host-run.sh --tools`, right after the Host-side run) with `fls`, `icat`, `fsstat`, `istat` and `mmls` of the normal build, into `vm/strict-host/sdaN/tools/`. That container has the same read-only mounts and write probes as the Host-side run's. The steps' logs and exit statuses are kept apart from the harness's, in `vm/strict-guest/sdaN/tool-steps/` (`capture-tools`, `run-tools`) and `vm/strict-host/sdaN/tool-steps/` (`host-tools`), so a failed tool run fails the CLI tool checks, not the harness's Strict checks. It finds partition N with `mmls -a`, the Nth allocated partition, the same one the harness's `--partition N` opens, and passes its offset with `-o` and `-b`. Ground truth for the tools (`fs-summary.txt` and `stat.txt`) is captured by `tsk-validate.sh capture-tools` right after the Manifest, and is in `vm/strict-guest/sdaN/`.
+
+**The comparison** is `build/vm-tools/check-tool`, C++14 like the comparison step and built by the same `manifest.mk`. It turns the tool's output and Ground truth into two Manifests that hold only the compared fields (`fls`: path and type; `icat`: path, type and SHA-256; `istat`: every field but SHA-256 and atime), and compares them with the comparison step's Strict rules and Known failures. `fsstat`'s summaries are compared field by field in the same way: a differing field is a difference named after the field (`fsstat-guest sda6 * uuid ...` in the Known failure list).
+
+```sh
+build/vm-tools/check-tool fls|icat|fsstat|istat --ground-truth-dir DIR --run-dir DIR \
+    [--known-failures FILE --check NAME --partition NAME] [--items FILE] [--max-items N] \
+    [--override FIELD=VALUE]
+```
+
+`--ground-truth-dir` holds `ground-truth.manifest`, `fs-summary.txt` and `stat.txt`. `--run-dir` holds what `run-tools.sh` wrote. `--override` (`fsstat` only) is the `TSK_VALIDATE_WRONG_SUMMARY` hook. Exit statuses are `compare-manifests`'s. A tool that fails as a whole makes its run an `!error` one: `fs-open` when libtsk didn't recognise the file system (the tool's error starts with one of libtsk's autodetection errors: `Cannot determine file system type`, `Possible encryption detected`, `Encryption detected` or `Multiple file system types detected`; the harness's code for the same failure, so the XFS partitions' Known failures read `<tool>-<side> sdaN * error:fs-open`), `tool-failed` for any other failure, and `tool-output` for output the check can't parse. A single `icat` that fails leaves its files without a SHA-256, and a single `istat` that fails leaves its entry `missing`.
+
+**Reading the CLI tool checks in the report.** A failed capture of their Ground truth (`capture-tools`) or a failed tool run (`run-tools` in the guest, `host-tools` on the host) is a failure naming the step. A writable path in the host's one-off container is also a failure. Then the comparison's findings come as for the harness's checks, against the same Ground truth: for example `icat-guest sda6: /corpus/links/target.txt: sha256 differs: ...`. The check's log has the tool run's log, each tool's exit status and first line of standard error, and the full comparison; the raw output is in the `tools/` directories above. With `TSK_VALIDATE_BREAK`, the `icat` checks of both sides fail too, naming the file and `sha256`. The other tool checks are unaffected: they don't read file content.
+
+**Self-test.** `test/vm/toolcheck/toolcheck_selftest.cpp` is linked into `manifest-selftest` (gate 1). It covers each parser on output captured from the 4.15.0 tools: fls paths, types, virtual entries and control characters; each autodetection error as "not recognised"; icat results by inode, failed files and probes; `stat` records and `istat` output, including mode strings with setuid, setgid and sticky bits, times before 1970 and after 2038, and istat's zero times; the guest's ext4 and XFS summaries and ext `fsstat` output, including the UUID without leading zeros. It also covers the summary comparison with Known failures, and the `check-tool` command: a pass for every tool, a changed byte failing `icat`, a wrong expected summary value failing `fsstat`, "not recognised" as a Known failure, and usage and input errors.
 
 ### Gate 5: format and lint
 
@@ -160,11 +197,13 @@ The code is C++14 and has no dependency on libtsk or any other language runtime.
 | `compare.h`, `compare.cpp` | The comparison step: `compare_manifests`, the Known failure and Volatile path list readers, the report |
 | `compare_cli.h`, `compare_cli.cpp`, `compare_main.cpp` | The `compare-manifests` command |
 | `selftest.cpp`, `sha256_selftest.cpp` | The self-test (CppUnit), run in gate 1 |
+| `../toolcheck/` | The [CLI tool checks](#gate-3-cli-tool-checks): `toolcheck.h`, `toolcheck.cpp` (the tools' output parsers), `toolcheck_cli.*` and `toolcheck_main.cpp` (`check-tool`), `toolcheck_selftest.cpp` (linked into the self-test), `run-tools.sh` |
 | `manifest.mk` | Plain GNU make file that builds all of it, the [harness and Ground truth capture](#the-harness-and-ground-truth-capture) and the [Test corpus generator](#the-test-corpus), into `build/vm-tools/` |
 
 ```sh
 make -f test/vm/manifest/manifest.mk          # libtskmanifest.a, compare-manifests, capture-ground-truth,
-                                              # tsk-harness, tsk-corpus and the self-tests (build the library first)
+                                              # tsk-harness, tsk-corpus, check-tool and the self-tests
+                                              # (build the library first)
 make -f test/vm/manifest/manifest.mk check    # ... and run the self-tests
 ```
 
@@ -267,13 +306,13 @@ strict-host    sda6       /lost+found      crtime          TSK doesn't read ext4
 strict-guest   sda6       *                crtime          the same for every entry
 ```
 
-- `check` and `partition` name the check and the partition the line belongs to (`[A-Za-z0-9._-]+`). The gate that runs the comparison passes the same names with `--check` and `--partition`. No wildcards, so a line always belongs to exactly one comparison. Check names: `strict-guest` and `strict-host` (gate 3, the Guest-side run and the Host-side run). Partition names are the guest's device names: `sda4`, `sda5`, `sda6`.
+- `check` and `partition` name the check and the partition the line belongs to (`[A-Za-z0-9._-]+`). The gate that runs the comparison passes the same names with `--check` and `--partition`. No wildcards, so a line always belongs to exactly one comparison. Check names: `strict-guest` and `strict-host` (gate 3, the Guest-side run and the Host-side run), and `fls-guest`, `icat-guest`, `fsstat-guest`, `istat-guest` and their `-host` twins (gate 3, the [CLI tool checks](#gate-3-cli-tool-checks)). Partition names are the guest's device names: `sda4`, `sda5`, `sda6`.
 - `subject` is an encoded path, or `*`. With a path, the line covers that entry only. With `*`, it covers that difference on every entry, or the whole run for `error:<code>`. A line naming the path takes precedence over a `*` line. A `*` line stays in use while any entry still has the difference, so a partial fix doesn't make it stale; prefer path lines once only a few entries are affected.
-- `difference` is `missing`, `extra`, one of the 12 compared field names, or `error:<code>`, which needs the subject `*`. `error:<code>` covers a run whose Manifest has `!error` with that code, i.e. a whole-file-system failure such as "file system not recognised".
+- `difference` is `missing`, `extra`, one of the 12 compared field names, one of the 7 summary fields of the `fsstat` checks (`fs-type`, `block-size`, `inode-size`, `group-count`, `uuid`, `label`, `version`, with the subject `*`), or `error:<code>`, which needs the subject `*`. `error:<code>` covers a run whose Manifest has `!error` with that code, i.e. a whole-file-system failure such as "file system not recognised".
 - The rest of the line is a free-text comment that is shown in the report. Say why the failure is expected and which issue fixes it.
 - Blank lines and lines starting with `#` are skipped. A duplicate line or an unknown difference is an error (exit status 2).
 
-The committed list is `test/vm/known-failures.txt`. It records `/data` (`sda4`) and `/data-compat` (`sda5`) as `* error:fs-open` for `strict-guest` and `strict-host`: no XFS support yet. On the Control file system (`sda6`), it records the libtsk ext4 defects the [Test corpus](#the-test-corpus) exposes, path by path, on both sides: times before 1970 and after 2106 (#30), slow symlinks with no target (#31), and three phantom names in the 50,000-entry directory (#32). The phantom names are bytes of the directory's htree index: name hashes (seeded per file system) and logical block numbers, both the same in every run on this file system. Two runs gave the same three names. `/boot` and `/` get their lines with the Best-effort check (#21), the only check that reads them.
+The committed list is `test/vm/known-failures.txt`. It records `/data` (`sda4`) and `/data-compat` (`sda5`) as `* error:fs-open` for `strict-guest` and `strict-host` and for each CLI tool check: no XFS support yet. On the Control file system (`sda6`), it records the libtsk ext4 defects the [Test corpus](#the-test-corpus) exposes, path by path, on both sides: times before 1970 and after 2106 (#30), slow symlinks with no target (#31), and three phantom names in the 50,000-entry directory (#32). The phantom names are bytes of the directory's htree index: name hashes (seeded per file system) and logical block numbers, both the same in every run on this file system. Two runs gave the same three names. `fls` lists the phantom names too, so they are also `extra` for `fls-guest` and `fls-host`. `fls` also prints a socket's metadata type as `h` (`s/h`): `tsk_fs_meta_type_str` has `s` and `h` in the wrong order for `TSK_FS_META_TYPE_ENUM`, an upstream output defect, so `/corpus/special/socket` is a `type` Known failure of both `fls` checks. `/boot` and `/` get their lines with the Best-effort check (#21), the only check that reads them.
 
 ### Volatile path list
 
@@ -289,10 +328,11 @@ A text file with one encoded path per line, relative to the file system root. Bl
 - Known failures: a listed difference is tolerated; a listed one that now passes fails; lines for other checks or partitions are ignored; `*` subjects; whole-run errors ("file system not recognised") tolerated, stale or with another code; list parsing;
 - the `compare-manifests` command: exit statuses, report, items and their cap, and usage and input errors.
 
-The same binary, `manifest-selftest`, also links `sha256_selftest.cpp`, `../capture/capture_selftest.cpp` and `../corpus/corpus_selftest.cpp`:
+The same binary, `manifest-selftest`, also links `sha256_selftest.cpp`, `../capture/capture_selftest.cpp`, `../corpus/corpus_selftest.cpp` and `../toolcheck/toolcheck_selftest.cpp` (the [CLI tool checks' self-test](#gate-3-cli-tool-checks)):
 
 - SHA-256: the FIPS 180-4 examples, lengths around the padding boundaries, all byte values, and the same data fed in pieces of different sizes;
 - the [Test corpus generator](#the-test-corpus), see [Its self-test](#its-self-test);
+- the [CLI tool checks](#gate-3-cli-tool-checks): the parsers of the tools' output and `check-tool`;
 - Ground truth capture, on a tree built in a temporary directory: each entry type, hard links, symlinks that are recorded but not followed (including 300-byte and non-UTF-8 targets), odd names, nanosecond and pre-1970 timestamps, permission bits, crtime when `statx` reports a birth time, walk order, an unreadable file, a missing root, a round trip of the whole tree through the writer and reader, and the command's exit statuses.
 
 Gate 1 runs it. A failing case fails gate 1 and is named in the report.

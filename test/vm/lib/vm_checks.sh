@@ -32,3 +32,14 @@ KNOWN_FAILURES=test/vm/known-failures.txt
 
 # The static guest build's binaries (test/vm/guest-build.sh), in build/guest-static/bin.
 GUEST_TOOLS=(fls icat fsstat istat tsk-harness capture-ground-truth tsk-corpus)
+
+# The CLI tool checks of each Strict check (gate 3): one check per tool and
+# side, named <tool>-guest and <tool>-host (also in the Known failure list).
+TOOL_CHECKS=(fls icat fsstat istat)
+
+# spot_check_paths <partition>: the istat spot-check paths of a partition,
+# one per line, from the committed list test/vm/istat-spot-checks.txt.
+spot_check_paths() {
+    awk -v p="$1" '$1 !~ /^#/ && $1 == p { print $2 }' \
+        "$(dirname "${BASH_SOURCE[0]}")/../istat-spot-checks.txt"
+}

@@ -71,8 +71,8 @@ load_manifest(
     return true;
 }
 
-// Appends the validate command's report items: failures and warnings (at
-// most max_items of each, then a count), and a summary note.
+} // namespace
+
 void
 write_items(std::ostream &out, const CompareResult &r, const std::string &label,
     size_t max_items)
@@ -113,8 +113,6 @@ write_items(std::ostream &out, const CompareResult &r, const std::string &label,
         << r.ground_truth_entries << " entries, run " << r.run_entries
         << " entries\n";
 }
-
-} // namespace
 
 int
 compare_cli(

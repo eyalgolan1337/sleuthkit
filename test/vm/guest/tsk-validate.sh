@@ -12,6 +12,11 @@
 #   tsk-validate.sh capture MNT OUT            Ground truth of MNT into OUT
 #   tsk-validate.sh flush DEV                  flush DEV's buffer cache, drop page caches
 #   tsk-validate.sh run DEV OUT                Guest-side run: the harness on DEV into OUT
+#   tsk-validate.sh capture-tools MNT DEV DIR PATH...
+#                                              Ground truth of the CLI tool checks into DIR:
+#                                              the file-system summary, stat of each PATH
+#   tsk-validate.sh run-tools DEV DIR          CLI tool checks: fls, icat, fsstat, istat on
+#                                              DEV into DIR/tools (DIR: capture, capture-tools)
 #   tsk-validate.sh break-locate MNT DEV PATH  test hook: where PATH's first byte is on DEV
 #   tsk-validate.sh break                      test hook: flip that byte on DEV
 #   tsk-validate.sh restore                    test hook: put the byte back
@@ -183,6 +188,47 @@ cmd_flush() {
 
 cmd_run() { "$BIN/tsk-harness" -o "$2" "$1"; }
 
+# Ground truth of the CLI tool checks (test/vm/README.md, "Gate 3: CLI tool
+# checks"), in the frozen window: the guest's own file-system summary for
+# fsstat (DIR/fs-summary.txt) and the stat records of the istat spot-check
+# paths (DIR/stat.txt). The formats are check-tool's (test/vm/toolcheck/).
+cmd_capture_tools() {
+    local mnt=$1 dev=$2 dir=$3 type p f rec target
+    shift 3
+    type=$(blkid -p -s TYPE -o value "$dev") || die "blkid -p $dev failed"
+    {
+        echo "== blkid"
+        blkid -p -o export "$dev"
+        case $type in
+        ext2 | ext3 | ext4)
+            echo "== dumpe2fs"
+            dumpe2fs -h "$dev" 2>/dev/null
+            ;;
+        xfs)
+            echo "== xfs_info"
+            xfs_info "$mnt"
+            ;;
+        esac
+    } >"$dir/fs-summary.txt" || die "could not write the file-system summary of $dev"
+    : >"$dir/stat.txt"
+    for p in "$@"; do
+        f=$mnt$p
+        if rec=$(TZ=UTC stat --printf '%i\t%f\t%u\t%g\t%s\t%h\t%y\t%z\t%w' -- "$f" 2>&1); then
+            target=-
+            [[ -L $f ]] && target=$(readlink -- "$f")
+            printf '%s\t%s\t%s\n' "$p" "$rec" "$target"
+        else
+            printf '%s\t!missing\t%s\n' "$p" "${rec//$'\n'/ }"
+        fi
+    done >>"$dir/stat.txt"
+}
+
+cmd_run_tools() {
+    local dev=$1 dir=$2
+    PATH=$BIN:$PATH "$HERE/run-tools.sh" "$dev" "$dir/tools" \
+        "$dir/ground-truth.manifest" "$dir/stat.txt"
+}
+
 # Test hook (TSK_VALIDATE_BREAK): the byte offset on DEV of the first byte of
 # MNT/PATH, found while the file system is not frozen yet.
 cmd_break_locate() {
@@ -236,6 +282,8 @@ unfreeze) cmd_unfreeze "$@" ;;
 capture) cmd_capture "$@" ;;
 flush) cmd_flush "$@" ;;
 run) cmd_run "$@" ;;
+capture-tools) cmd_capture_tools "$@" ;;
+run-tools) cmd_run_tools "$@" ;;
 break-locate) cmd_break_locate "$@" ;;
 break) cmd_break ;;
 restore) cmd_restore ;;

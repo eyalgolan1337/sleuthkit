@@ -176,6 +176,63 @@ gate3_strict_host() {
     [[ -n $ok ]]
 }
 
+# CLI tool check of one tool on one side of a partition's Strict check
+# (test/vm/README.md, "Gate 3: CLI tool checks"): the tool's output, run in
+# the same frozen window as the harness, compared with Ground truth by
+# check-tool. Check name in the Known failure list: <tool>-<side>.
+gate3_tool() {
+    local tool=$1 side=$2 part=$3 mnt=$4 gt=$RUN_DIR/vm/strict-guest/$3
+    local dir=$RUN_DIR/vm/strict-$2/$3 step=run-tools name rc secs line f
+    local override=()
+    [[ $side == host ]] && step=host-tools
+    # The tool steps' exit statuses (collect-vm.sh): capture-tools and
+    # run-tools in the guest's tool-steps/, host-tools in the host's.
+    if ! IFS=$'\t' read -r name rc secs < <(grep "^capture-tools"$'\t' "$gt/tool-steps/steps.tsv" 2>/dev/null); then
+        item_fail "$mnt ($part): the tool checks' Ground truth was not captured: the Strict check sequence stopped before it (see the Strict check, Guest side)"
+        return 1
+    fi
+    if [[ $rc != 0 ]]; then
+        item_fail "$mnt ($part): capturing the tool checks' Ground truth failed (capture-tools, exit $rc): $(tail -n1 "$gt/tool-steps/capture-tools.log")"
+        return 1
+    fi
+    if ! IFS=$'\t' read -r name rc secs < <(grep "^$step"$'\t' "$dir/tool-steps/steps.tsv" 2>/dev/null); then
+        item_fail "$mnt ($part): fls, icat, fsstat and istat did not run on the $side side (step $step; see the Strict check of this side)"
+        return 1
+    fi
+    echo "== $step (exit status $rc, ${secs}s)"
+    cat "$dir/tool-steps/$step.log"
+    if [[ $side == host ]]; then
+        while IFS= read -r line; do
+            item_fail "one-off container: ${line#WRITABLE: } is writable; it must be mounted read-only"
+        done < <(grep '^WRITABLE: ' "$dir/tool-steps/$step.log")
+    fi
+    if [[ $rc != 0 ]]; then
+        item_fail "$mnt ($part): the $side side's tool run failed (step $step, exit $rc): $(tail -n1 "$dir/tool-steps/$step.log")"
+        return 1
+    fi
+    if [[ $tool == fsstat && -f $gt/summary-override ]]; then
+        override=(--override "$(<"$gt/summary-override")")
+    fi
+    echo "== $tool: exit statuses and standard error"
+    for f in "$dir/tools/$tool"*.status "$dir/tools/$tool"/*.status; do
+        [[ -f $f ]] || continue
+        printf '%s: exit %s %s\n' "${f#"$dir/tools/"}" "$(<"$f")" "$(head -n1 "${f%.status}.err")"
+    done
+    echo "== comparison"
+    if ! make -s -j"$JOBS" -f test/vm/manifest/manifest.mk build/vm-tools/check-tool; then
+        item_fail "could not build check-tool; see the log"
+        return 1
+    fi
+    build/vm-tools/check-tool "$tool" --ground-truth-dir "$gt" --run-dir "$dir/tools" \
+        --known-failures "$KNOWN_FAILURES" --check "$tool-$side" --partition "$part" \
+        --items "$VALIDATE_ITEMS" "${override[@]}" | tee "$dir/$tool-compare.txt"
+    rc=${PIPESTATUS[0]}
+    while IFS= read -r line; do
+        item_note "Known failure: ${line#KNOWN }"
+    done < <(grep '^KNOWN ' "$dir/$tool-compare.txt")
+    ((rc == 0))
+}
+
 gate_3() {
     gate_begin 3 "Strict checks"
     run_check vm "Validation VM and the static guest tools" gate3_vm
@@ -186,6 +243,17 @@ gate_3() {
             gate3_strict_guest "$part" "$mnt"
         run_check "strict-host-$part" "Strict check, Host side: $mnt ($part), .vmdk" \
             gate3_strict_host "$part" "$mnt"
+    done
+    local tool side
+    for entry in "${STRICT_PARTITIONS[@]}"; do
+        read -r part mnt <<<"$entry"
+        for side in guest host; do
+            for tool in "${TOOL_CHECKS[@]}"; do
+                run_check "$tool-$side-$part" \
+                    "CLI tool check, ${side^} side: $tool, $mnt ($part)$([[ $side == host ]] && echo ', .vmdk')" \
+                    gate3_tool "$tool" "$side" "$part" "$mnt"
+            done
+        done
     done
     gate_end
 }

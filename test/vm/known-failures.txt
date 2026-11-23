@@ -5,7 +5,10 @@
 # matches a difference fails its gate: remove it once the problem is fixed.
 #
 # Checks: strict-guest and strict-host (gate 3, the Guest-side run and the
-# Host-side run of the Strict check).
+# Host-side run of the Strict check); fls-guest, icat-guest, fsstat-guest,
+# istat-guest and their -host twins (gate 3, the CLI tool checks of each
+# side). Summary fields (fs-type, block-size, inode-size, group-count, uuid,
+# label, version) are differences of the fsstat checks.
 # Partitions: the guest's device names (sda4 /data, sda5 /data-compat,
 # sda6 /control, the Control file system).
 
@@ -41,3 +44,33 @@ strict-host    sda6       /corpus/links/max-symlink-1023               target  e
 strict-host    sda6       /corpus/dirs/btree/C                         extra   phantom name from an htree dx_node block parsed as dirents (#32)
 strict-host    sda6       /corpus/dirs/btree/g                         extra   phantom name from an htree dx_node block parsed as dirents (#32)
 strict-host    sda6       /corpus/dirs/btree/%E6                       extra   phantom name from an htree dx_node block parsed as dirents (#32)
+fls-guest      sda4       *        error:fs-open  /data is XFS: file system not recognised (no XFS support yet, #11)
+fls-guest      sda5       *        error:fs-open  /data-compat is XFS: file system not recognised (no XFS support yet, #11)
+fls-host       sda4       *        error:fs-open  /data is XFS: file system not recognised (no XFS support yet, #11)
+fls-host       sda5       *        error:fs-open  /data-compat is XFS: file system not recognised (no XFS support yet, #11)
+icat-guest     sda4       *        error:fs-open  /data is XFS: file system not recognised (no XFS support yet, #11)
+icat-guest     sda5       *        error:fs-open  /data-compat is XFS: file system not recognised (no XFS support yet, #11)
+icat-host      sda4       *        error:fs-open  /data is XFS: file system not recognised (no XFS support yet, #11)
+icat-host      sda5       *        error:fs-open  /data-compat is XFS: file system not recognised (no XFS support yet, #11)
+fsstat-guest   sda4       *        error:fs-open  /data is XFS: file system not recognised (no XFS support yet, #11)
+fsstat-guest   sda5       *        error:fs-open  /data-compat is XFS: file system not recognised (no XFS support yet, #11)
+fsstat-host    sda4       *        error:fs-open  /data is XFS: file system not recognised (no XFS support yet, #11)
+fsstat-host    sda5       *        error:fs-open  /data-compat is XFS: file system not recognised (no XFS support yet, #11)
+istat-guest    sda4       *        error:fs-open  /data is XFS: file system not recognised (no XFS support yet, #11)
+istat-guest    sda5       *        error:fs-open  /data-compat is XFS: file system not recognised (no XFS support yet, #11)
+istat-host     sda4       *        error:fs-open  /data is XFS: file system not recognised (no XFS support yet, #11)
+istat-host     sda5       *        error:fs-open  /data-compat is XFS: file system not recognised (no XFS support yet, #11)
+
+# The same phantom names in fls's listing (the CLI tool checks).
+fls-guest      sda6       /corpus/dirs/btree/C                          extra   phantom name from an htree dx_node block parsed as dirents (#32)
+fls-guest      sda6       /corpus/dirs/btree/g                          extra   phantom name from an htree dx_node block parsed as dirents (#32)
+fls-guest      sda6       /corpus/dirs/btree/%E6                        extra   phantom name from an htree dx_node block parsed as dirents (#32)
+fls-host       sda6       /corpus/dirs/btree/C                          extra   phantom name from an htree dx_node block parsed as dirents (#32)
+fls-host       sda6       /corpus/dirs/btree/g                          extra   phantom name from an htree dx_node block parsed as dirents (#32)
+fls-host       sda6       /corpus/dirs/btree/%E6                        extra   phantom name from an htree dx_node block parsed as dirents (#32)
+# fls prints a socket's metadata type as h: tsk_fs_meta_type_str
+# (tsk/fs/fs_inode.c) has s and h in the wrong order for TSK_FS_META_TYPE_ENUM
+# (7 SHAD, 8 SOCK), so the listing says s/h. Upstream output defect, not fixed
+# here; the harness reads meta->type and isn't affected.
+fls-guest      sda6       /corpus/special/socket                        type    fls prints a socket as s/h (tsk_fs_meta_type_str order)
+fls-host       sda6       /corpus/special/socket                        type    fls prints a socket as s/h (tsk_fs_meta_type_str order)

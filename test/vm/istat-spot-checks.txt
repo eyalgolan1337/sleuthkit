@@ -1,0 +1,46 @@
+# The istat spot checks of the CLI tool checks (test/vm/README.md, "Gate 3:
+# CLI tool checks"): a fixed set of paths per partition, one per line:
+# partition, then the path relative to the file system root. In the frozen
+# window the guest runs stat on each path; istat then runs on the inode
+# number that stat reports, and its output is compared with stat's.
+# Paths are printable ASCII without spaces or '%'. A path that doesn't exist
+# in the guest fails the check.
+#
+# The same Test corpus entries on every partition: one of each kind
+# (directory, empty, small and multi-block files, a short symlink, a file with
+# three hard links, a file owned by uid 1000 with mode 0640), all with
+# nanosecond mtimes. Keep away from /corpus/times (istat prints a time at or
+# before the epoch as 0000-00-00) and the long symlinks (#31).
+
+# partition  path
+sda4         /
+sda4         /corpus
+sda4         /corpus/dirs/leaf
+sda4         /corpus/files/empty
+sda4         /corpus/files/small.txt
+sda4         /corpus/files/multiblock.bin
+sda4         /corpus/links/short-symlink
+sda4         /corpus/links/target.txt
+sda4         /corpus/links/sub/hard-2
+sda4         /corpus/owners/user-0640
+sda5         /
+sda5         /corpus
+sda5         /corpus/dirs/leaf
+sda5         /corpus/files/empty
+sda5         /corpus/files/small.txt
+sda5         /corpus/files/multiblock.bin
+sda5         /corpus/links/short-symlink
+sda5         /corpus/links/target.txt
+sda5         /corpus/links/sub/hard-2
+sda5         /corpus/owners/user-0640
+sda6         /
+sda6         /corpus
+sda6         /corpus/dirs/leaf
+sda6         /corpus/files/empty
+sda6         /corpus/files/small.txt
+sda6         /corpus/files/multiblock.bin
+sda6         /corpus/links/short-symlink
+sda6         /corpus/links/target.txt
+sda6         /corpus/links/sub/hard-2
+sda6         /corpus/owners/user-0640
+sda6         /lost+found
