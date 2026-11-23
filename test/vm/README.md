@@ -41,7 +41,7 @@ Run it on the host. Inside the devcontainer the command still runs every gate, b
 | 4 | **Best-effort checks** of `/` and `/boot` on the Validation VM, in use, with no freeze and no cache flush: [Gate 4: Best-effort checks](#gate-4-best-effort-checks). | Implemented |
 | 5 | `clang-format` and `clang-tidy` on changed lines only. | Implemented |
 
-A gate that doesn't exist yet appears in the report as `NOT IMPLEMENTED`. It neither passes nor fails.
+All five gates are implemented. A gate file that calls `gate_not_implemented` instead (see [Adding a check](#adding-a-check)) appears in the report as `NOT IMPLEMENTED`, and neither passes nor fails.
 
 ### Gate 1: C++17 and C++20 syntax
 
@@ -214,7 +214,7 @@ Compiler warnings are listed only for changed files. Warnings in unchanged upstr
 
 ## Adding a check
 
-Later parts of the setup add checks to the gate files in `test/vm/gates/` (`gate<n>.sh`, one `gate_<n>` function each) using the report API in `test/vm/lib/report.sh`:
+Checks live in the gate files in `test/vm/gates/` (`gate<n>.sh`, one `gate_<n>` function each) and report through the API in `test/vm/lib/report.sh`. Checks of the Validation VM's results (gates 3 and 4) also share `test/vm/lib/vm_results.sh`: `vm_compare` runs the comparison step with the Known failure list, `vm_host_run` reads a Host-side run's outcome. A new check of the VM gets its Known failure check name from the comparisons in `vm_comparisons` (`lib/vm_checks.sh`), so that [gate 1](#gate-1-known-failure-list-check) accepts its lines:
 
 ```sh
 gate_1() {
@@ -778,6 +778,7 @@ The Validation VM's disk has no v4 file system. The [XFS fixture images](#xfs-fi
 | `guest-build.sh` | devcontainer | The [static guest build](#the-static-guest-build) |
 | `host-build.sh` | devcontainer | The normal build's library and `tsk-harness`, for the Host-side runs |
 | `host-run.sh` | one-off container | The Host-side run: read-only probe, then the harness on the `.vmdk`; started by `collect-vm.sh` |
-| `lib/vm_checks.sh` | both | The Strict check and Best-effort check partitions and mount points, shared by `collect-vm.sh` and gates 3 and 4 |
+| `lib/vm_checks.sh` | both | The Strict check and Best-effort check partitions and mount points, shared by `collect-vm.sh` and gates 3 and 4, and the comparisons they run (`vm_comparisons`, for gate 1's Known failure list check) |
+| `lib/vm_results.sh` | devcontainer | What gates 3 and 4 share when they read the collected results: the comparison with Known failures, a Host-side run's outcome |
 | `volatile-paths/` | devcontainer | The committed [Volatile path lists](#volatile-path-list) |
 | `known-failures.txt` | devcontainer | The committed [Known failure list](#known-failure-list) |

@@ -51,24 +51,24 @@ TOOL_CHECKS=(fls icat fsstat istat)
 # separated by commas (compare-manifests --lint-known-failures --comparisons).
 # The check names are the ones the gates pass with --check.
 vm_comparisons() {
-    local entry part mnt side tool out=()
+    local entry part side tool pairs=()
     for entry in "${STRICT_PARTITIONS[@]}"; do
-        read -r part mnt <<<"$entry"
+        read -r part _ <<<"$entry"
         for side in guest host; do
-            out+=("strict-$side:$part")
+            pairs+=("strict-$side:$part")
             for tool in "${TOOL_CHECKS[@]}"; do
-                out+=("$tool-$side:$part")
+                pairs+=("$tool-$side:$part")
             done
         done
     done
     for entry in "${BEST_EFFORT_PARTITIONS[@]}"; do
-        read -r part mnt <<<"$entry"
+        read -r part _ <<<"$entry"
         for side in guest host; do
-            out+=("best-effort-$side:$part")
+            pairs+=("best-effort-$side:$part")
         done
     done
     local IFS=,
-    printf '%s\n' "${out[*]}"
+    printf '%s\n' "${pairs[*]}"
 }
 
 # spot_check_paths <partition>: the istat spot-check paths of a partition,

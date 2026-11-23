@@ -11,15 +11,14 @@
 
 # shellcheck source=../lib/vm_checks.sh
 source "$VALIDATE_LIB/vm_checks.sh"
+# shellcheck source=../lib/vm_results.sh
+source "$VALIDATE_LIB/vm_results.sh"
 
 # The collection's outcome: the VM, the copy of the static guest build, and
 # whether each static tool runs in the guest.
 gate3_vm() {
     local vm=$RUN_DIR/vm state reason line
-    if [[ ! -f $vm/status ]]; then
-        item_fail "no results from the Validation VM: this gate needs the host, which collects them before entering the devcontainer. Run test/vm/validate.sh on the host."
-        return 1
-    fi
+    vm_require_collected || return 1
     cat "$RUN_DIR/logs/vm-collect.log" 2>/dev/null
     if [[ -f $vm/vm.txt ]]; then
         while IFS= read -r line; do item_note "VM: $line"; done <"$vm/vm.txt"
@@ -119,22 +118,8 @@ gate3_strict_guest() {
 # gate3_compare <ground truth> <run> <check> <partition> <output>: the Strict
 # comparison of a run's Manifest with Ground truth, its findings as items.
 gate3_compare() {
-    local gt=$1 run=$2 check=$3 part=$4 out=$5 rc line
     echo "== comparison"
-    if ! make -s -j"$JOBS" -f test/vm/manifest/manifest.mk build/vm-tools/compare-manifests; then
-        item_fail "could not build compare-manifests; see the log"
-        return 1
-    fi
-    build/vm-tools/compare-manifests --ground-truth "$gt" --run "$run" --mode strict \
-        --known-failures "$KNOWN_FAILURES" --check "$check" --partition "$part" \
-        --items "$VALIDATE_ITEMS" | tee "$out"
-    rc=${PIPESTATUS[0]}
-    # Known failures don't appear in the items; list them, so the report
-    # shows what this check tolerated.
-    while IFS= read -r line; do
-        item_note "Known failure: ${line#KNOWN }"
-    done < <(grep '^KNOWN ' "$out")
-    ((rc == 0))
+    vm_compare "$5" "$3" "$4" --ground-truth "$1" --run "$2" --mode strict
 }
 
 # Strict check, Host side, of one partition: the Host-side run on the .vmdk
@@ -143,31 +128,12 @@ gate3_compare() {
 # of the sequence they share.
 gate3_strict_host() {
     local part=$1 mnt=$2 dir=$RUN_DIR/vm/strict-host/$1 gt=$RUN_DIR/vm/strict-guest/$1/ground-truth.manifest
-    local name rc secs ok=1 line
+    local ok=1
     if [[ ! -f $dir/steps.tsv ]]; then
         item_fail "$mnt ($part) was not checked on the Host side: the Strict check sequence stopped before the Host-side run (see the Guest side check)"
         return 1
     fi
-    echo "== host-run (exit status, seconds)"
-    cat "$dir/steps.tsv"
-    echo "== host-run.log"
-    cat "$dir/host-run.log"
-    # The write attempts in the one-off container: each must have failed.
-    while IFS= read -r line; do
-        case $line in
-        read-only:*) item_note "one-off container: write refused, ${line#read-only: }" ;;
-        WRITABLE:*) item_fail "one-off container: ${line#WRITABLE: } is writable; it must be mounted read-only" ;;
-        esac
-    done <"$dir/host-run.log"
-    IFS=$'\t' read -r name rc secs <"$dir/steps.tsv"
-    case $rc in
-    0 | 1) ;; # 1: an incomplete or failed run; the comparison reports it
-    3) return 1 ;; # writable paths, reported above; no Manifest
-    *)
-        item_fail "$mnt ($part): the Host-side run failed (exit $rc): $(tail -n1 "$dir/host-run.log")"
-        return 1
-        ;;
-    esac
+    vm_host_run "$dir" "$mnt ($part)" || return 1
     if [[ ! -s $gt || ! -s $dir/host.manifest ]]; then
         item_fail "$mnt ($part): no Manifest to compare (Ground truth or the Host-side run is missing)"
         return 1
@@ -227,9 +193,7 @@ gate3_tool() {
         --known-failures "$KNOWN_FAILURES" --check "$tool-$side" --partition "$part" \
         --items "$VALIDATE_ITEMS" "${override[@]}" | tee "$dir/$tool-compare.txt"
     rc=${PIPESTATUS[0]}
-    while IFS= read -r line; do
-        item_note "Known failure: ${line#KNOWN }"
-    done < <(grep '^KNOWN ' "$dir/$tool-compare.txt")
+    vm_known_failure_notes "$dir/$tool-compare.txt"
     ((rc == 0))
 }
 
