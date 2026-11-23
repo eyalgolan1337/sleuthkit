@@ -1,6 +1,7 @@
 # shellcheck shell=bash
-# Gate 1: devcontainer build and C++17/C++20 syntax check of changed C++ files.
-# Later tickets add the static guest build and the comparison self-test here.
+# Gate 1: devcontainer build, C++17/C++20 syntax check of changed C++ files,
+# and the comparison step's self-test. A later ticket adds the static guest
+# build here.
 
 gate1_build() {
     local fresh=$VALIDATE_FRESH compiler
@@ -38,10 +39,35 @@ gate1_cxx_std() {
         --items "$VALIDATE_ITEMS" --jobs "$JOBS" "${incomplete[@]}" -- "${changed[@]}"
 }
 
+# The comparison step's self-test: hand-made Manifests, no Validation VM
+# (test/vm/manifest/selftest.cpp). The build check already built it; make
+# only rebuilds what is out of date, so this check also stands on its own.
+gate1_manifest_selftest() {
+    local selftest=build/vm-tools/manifest-selftest out rc=0 name
+    if ! make -j"$JOBS" -f test/vm/manifest/manifest.mk all; then
+        item_fail "could not build the comparison step and its self-test; see the log"
+        return 1
+    fi
+    out=$("$selftest" 2>&1) || rc=$?
+    printf '%s\n' "$out"
+    if ((rc == 0)); then
+        local n
+        n=$(sed -nE 's/^OK \(([0-9]+)\)$/\1/p' <<<"$out")
+        item_note "${n:-all} self-test cases passed"
+        return 0
+    fi
+    while IFS= read -r name; do
+        item_fail "self-test case failed: ${name#Test name: }"
+    done < <(grep '^Test name: ' <<<"$out")
+    grep -q '^Test name: ' <<<"$out" || item_fail "$selftest exited with status $rc; see the log"
+    return 1
+}
+
 gate_1() {
-    gate_begin 1 "Build and C++17/C++20 syntax"
+    gate_begin 1 "Build, C++17/C++20 syntax and comparison self-test"
     run_check build "Build (configure if needed, make, check programs, compile_commands.json)" gate1_build
     run_check cxx17 "C++17 syntax-only compile of changed C++ files" gate1_cxx_std c++17
     run_check cxx20 "C++20 syntax-only compile of changed C++ files" gate1_cxx_std c++20
+    run_check manifest-selftest "Comparison step self-test (hand-made Manifests)" gate1_manifest_selftest
     gate_end
 }

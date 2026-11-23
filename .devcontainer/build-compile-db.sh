@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Configure and build libtsk, tools, samples and every test program under bear,
-# writing compile_commands.json at the repo root for clangd and clang-tidy.
+# Configure and build libtsk, tools, samples, every test program and the
+# validation setup's C++ tools (test/vm/manifest/) under bear, writing
+# compile_commands.json at the repo root for clangd and clang-tidy.
 # Run inside the devcontainer. Re-run after adding or removing source files.
 #
 #   .devcontainer/build-compile-db.sh            # incremental: reuse configure, rebuild everything
@@ -18,9 +19,13 @@ fi
 # Only translation units that are actually compiled get an entry, so clean
 # first: objects left from an earlier build would be skipped by make.
 make -s clean >/dev/null
+make -s -f test/vm/manifest/manifest.mk clean
 bear --output compile_commands.json -- make -j"$(nproc)"
 # Build (but do not run) the check programs: unit_tests/ and tests/.
 bear --append --output compile_commands.json -- make -j"$(nproc)" check TESTS=
+# The Manifest library, the comparison step and its self-test (plain make;
+# not part of the autotools build). Output in build/vm-tools/.
+bear --append --output compile_commands.json -- make -j"$(nproc)" -f test/vm/manifest/manifest.mk
 
 # libtool compiles each file by a name relative to its directory, so tools
 # report diagnostics against e.g. "tsk_list.c" and clang-tidy-diff's line
