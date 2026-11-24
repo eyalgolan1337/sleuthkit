@@ -40,30 +40,22 @@ struct Fixture {
     unsigned inode_size;
     unsigned ag_count;
     unsigned ag_blocks;
-    unsigned dir_block_size; // naming bsize
     // From xfs_db on the image, independently of libtsk: the largest inode
     // number the geometry allows (convert agno <last> agbno <last block of
-    // the last AG> inoidx <inodes per block - 1> inode), and the internal
-    // log's first block as a linear block (convert fsb <sb logstart> daddr,
-    // in 512-byte units, divided by block size / 512) with its xfs_info
-    // log blocks.
+    // the last AG> inoidx <inodes per block - 1> inode).
     uint64_t max_inode;
-    const char *log;
 };
 
 const Fixture V4 = {"v4", 1006, "5f4b0c1e-0000-4000-8000-000000000004", 4, 4096,
-    81920, 256, 4, 20480, 4096, 0x1cffff, "internal, blocks 40964 - 57347"};
+    81920, 256, 4, 20480, 0x1cffff};
 const Fixture V4_512 = {"v4-512", 1006, "5f4b0c1e-0000-4000-8000-000000000512",
-    4, 512, 655360, 256, 4, 163840, 4096, 0x1cffff,
-    "internal, blocks 327687 - 458758"};
+    4, 512, 655360, 256, 4, 163840, 0x1cffff};
 const Fixture V5_1K = {"v5-1k", 1181, "5f4b0c1e-0000-4000-8000-000000001024", 5,
-    1024, 327680, 512, 4, 81920, 4096, 0xe7fff,
-    "internal, blocks 163848 - 229383"};
+    1024, 327680, 512, 4, 81920, 0xe7fff};
 const Fixture V5_64K = {"v5-64k", 18821, "5f4b0c1e-0000-4000-8000-000000065536",
-    5, 65536, 8192, 512, 4, 2048, 65536, 0xfffff,
-    "internal, blocks 4103 - 6086"};
+    5, 65536, 8192, 512, 4, 2048, 0xfffff};
 const Fixture V5 = {"v5", 1181, "5f4b0c1e-0000-4000-8000-000000000005", 5, 4096,
-    81920, 512, 4, 20480, 4096, 0xe7fff, "internal, blocks 40967 - 57350"};
+    81920, 512, 4, 20480, 0xe7fff};
 
 // The volume ID as a canonical UUID ("" unless it has 16 bytes).
 std::string
@@ -228,32 +220,28 @@ class XfsFixturesTest : public CppUnit::TestFixture {
             expect("Volume ID", f.uuid);
             expect("Version", std::to_string(f.version));
             expect("Block Size", std::to_string(f.block_size));
+            expect("Block Count", std::to_string(f.blocks));
             expect("Block Range", "0 - " + std::to_string(f.blocks - 1));
+            expect("Total Range in Image", "(no line)");
             expect("Inode Size", std::to_string(f.inode_size));
+            expect(
+                "Inode per Block", std::to_string(f.block_size / f.inode_size));
+            expect("Inode Range", "0 - " + std::to_string(f.max_inode + 1));
             expect("Allocation Group Count", std::to_string(f.ag_count));
-            expect("Allocation Group Size",
-                std::to_string(f.ag_blocks) + " blocks");
-            expect("Directory Block Size", std::to_string(f.dir_block_size));
+            expect("Allocation Group Block Size", std::to_string(f.ag_blocks));
             expect("Sector Size", "512");
-            expect("Root Directory", std::to_string(fs->root_inum));
-            expect("Realtime Device", "none");
-            // The internal log's place, as linear blocks. It is in AG 2, and
-            // (except on v5-64k) blocks per AG are not a power of two, so a
-            // wrong fsblock conversion would show here.
-            expect("Log", f.log);
+            expect("Root Inode", std::to_string(fs->root_inum));
+            expect("Inode max persentage", "25");
             if (f.version == 5) {
                 // xfs_info: finobt=1 rmapbt=1 reflink=1 inobtcount=1;
                 // ftype=1 sparse=1 bigtime=1 nrext64=1.
-                expect("Read-Only Compatible Features",
+                expect("Read Only Compat Features",
                     "finobt, rmapbt, reflink, inobtcount");
-                expect(
-                    "Incompatible Features", "ftype, sparse, bigtime, nrext64");
-                expect("Features 2", "lazy-count, attr2, projid32bit, crc");
+                expect("InCompat Features", "ftype, sparse, bigtime, nrext64");
             }
             else {
-                // xfs_info: crc=0, ftype=1, lazy-count=1, projid32bit=1.
-                expect("Features 2", "lazy-count, attr2, projid32bit, ftype");
-                expect("Incompatible Features", "(no line)");
+                expect("Read Only Compat Features", "(no line)");
+                expect("InCompat Features", "(no line)");
             }
         }
     }

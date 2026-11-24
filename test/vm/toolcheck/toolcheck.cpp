@@ -365,15 +365,23 @@ sections(const std::string &raw)
     return out;
 }
 
-// "Key:   value" lines (dumpe2fs -h): the trimmed value of the first line
-// whose text before the colon is `key`.
+// "Key:   value" lines (dumpe2fs -h, fsstat): the trimmed value of the first
+// line whose text before the colon, less one trailing space, is `key`.
 bool
 colon_value(const std::vector<std::string> &lines, const std::string &key,
     std::string &value)
 {
     for (const std::string &l : lines) {
         const size_t colon = l.find(':');
-        if (colon != std::string::npos && l.substr(0, colon) == key) {
+        if (colon == std::string::npos) {
+            continue;
+        }
+        // XFS's fsstat puts a space before the colon ("Block Size : 4096").
+        std::string name = l.substr(0, colon);
+        if (!name.empty() && name.back() == ' ') {
+            name.pop_back();
+        }
+        if (name == key) {
             value = trim_spaces(l.substr(colon + 1));
             return true;
         }
@@ -504,9 +512,9 @@ fsstat_xfs(const std::vector<std::string> &lines)
     std::string label;
     bool has_label = false;
     for (const std::string &l : lines) {
-        // "Volume Name: " keeps an empty name; colon_value would trim it.
-        if (l.compare(0, 13, "Volume Name: ") == 0 && !has_label) {
-            label = l.substr(13);
+        // "Volume Name : " keeps an empty name; colon_value would trim it.
+        if (l.compare(0, 14, "Volume Name : ") == 0 && !has_label) {
+            label = l.substr(14);
             has_label = true;
         }
     }

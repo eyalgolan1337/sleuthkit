@@ -73,15 +73,13 @@ const size_t SB_MAGIC = 0, SB_BLOCKSIZE = 4, SB_DBLOCKS = 8, SB_RBLOCKS = 16,
              SB_INODESIZE = 104, SB_INOPBLOCK = 106, SB_FNAME = 108,
              SB_BLOCKLOG = 120, SB_SECTLOG = 121, SB_INODELOG = 122,
              SB_INOPBLOG = 123, SB_AGBLKLOG = 124, SB_IMAX_PCT = 127,
-             SB_DIRBLKLOG = 192, SB_FEATURES2 = 200, SB_BAD_FEATURES2 = 204,
-             SB_FEATURES_INCOMPAT = 216, SB_META_UUID = 248;
+             SB_DIRBLKLOG = 192, SB_FEATURES_INCOMPAT = 216, SB_META_UUID = 248;
 
 // The v5 image (xfs_info and xfs_db): version number 0xb4a5, 4 KiB blocks,
 // 512-byte sectors and inodes, 4 AGs of 20480 blocks (agblklog 15), 81920
-// blocks, root 128, features2 0x18a, incompat 0x2b (ftype, sparse, bigtime,
+// blocks, root 128, incompat 0x2b (ftype, sparse, bigtime,
 // nrext64), a 16384-block internal log.
 const uint16_t V5_VERSIONNUM = 0xb4a5;
-const uint32_t V5_FEATURES2 = 0x18a;
 const uint32_t V5_INCOMPAT = 0x2b;
 
 std::string
@@ -129,7 +127,6 @@ class XfsSuperblockTest : public CppUnit::TestFixture {
     CPPUNIT_TEST(testLabelOfTwelveBytes);
     CPPUNIT_TEST(testInodesOf1KiB);
     CPPUNIT_TEST(testUnusualSuperblockInFsstat);
-    CPPUNIT_TEST(testBadFeatures2Merged);
     CPPUNIT_TEST_SUITE_END();
 
   public:
@@ -246,8 +243,17 @@ class XfsSuperblockTest : public CppUnit::TestFixture {
             ImgPtr img;
             Opened o = open_fs(path, TSK_FS_TYPE_XFS, img);
             CPPUNIT_ASSERT_MESSAGE(name + ": opened as xfs", o.fs == nullptr);
-            CPPUNIT_ASSERT_MESSAGE(
-                name + ": no TSK error as xfs", o.err != 0 && !o.text.empty());
+            // A wrong magic is not XFS; any other damage is a corrupt XFS
+            // superblock. Of the reasons, only a bad block size has a text
+            // (the earlier XFS module's).
+            CPPUNIT_ASSERT_EQUAL_MESSAGE(name + ": TSK error as xfs: " + o.text,
+                name == "magic" ? uint32_t{TSK_ERR_FS_MAGIC}
+                                : uint32_t{TSK_ERR_FS_CORRUPT},
+                o.err);
+            const bool block_size = name == "block-size-not-log" ||
+                name == "block-log-128k" || name == "v5-block-512";
+            CPPUNIT_ASSERT_EQUAL_MESSAGE(name + ": " + o.text, block_size,
+                o.text.find("(block size)") != std::string::npos);
             o = open_fs(path, TSK_FS_TYPE_DETECT, img);
             CPPUNIT_ASSERT_MESSAGE(name + ": autodetected", o.fs == nullptr);
             CPPUNIT_ASSERT_MESSAGE(
@@ -302,14 +308,14 @@ class XfsSuperblockTest : public CppUnit::TestFixture {
         CPPUNIT_ASSERT_EQUAL_MESSAGE(
             text, std::string("1024"), fsstat_value(text, "Inode Size"));
         CPPUNIT_ASSERT_EQUAL_MESSAGE(
-            text, std::string("4"), fsstat_value(text, "Inodes per Block"));
+            text, std::string("4"), fsstat_value(text, "Inode per Block"));
         CPPUNIT_ASSERT_EQUAL(
             uint64_t{475136}, static_cast<uint64_t>(o.fs->last_inum));
     }
 
     // Features this module doesn't know, a separate metadata UUID, an
     // external log and a realtime device are possible: the file system
-    // opens, and fsstat shows them.
+    // opens, and fsstat names the features it knows.
     void testUnusualSuperblockInFsstat()
     {
         Bytes b = v5_start();
@@ -328,29 +334,9 @@ class XfsSuperblockTest : public CppUnit::TestFixture {
             CPPUNIT_ASSERT_EQUAL_MESSAGE(
                 text, std::string(want), fsstat_value(text, key));
         };
-        expect("Incompatible Features",
-            "ftype, sparse, meta-uuid, bigtime, nrext64, unknown 0x80000000");
-        expect("Metadata UUID", "11111111-1111-1111-1111-111111111111");
+        expect(
+            "InCompat Features", "ftype, sparse, meta-uuid, bigtime, nrext64");
         expect("Volume ID", "5f4b0c1e-0000-4000-8000-000000000005");
-        expect("Log", "external, 16384 blocks");
-        expect("Realtime Device", "1000 blocks (not read)");
-    }
-
-    // Old kernels wrote some features2 bits to sb_bad_features2; the
-    // kernel merges the two, and so does fsstat.
-    void testBadFeatures2Merged()
-    {
-        Bytes b = v5_start();
-        put32(b, SB_FEATURES2, V5_FEATURES2 & ~0x8u); // attr2 only in bad
-        put32(b, SB_BAD_FEATURES2, 0x8);
-        ImgPtr img;
-        const Opened o =
-            open_fs(write_image("bad-features2", b), TSK_FS_TYPE_XFS, img);
-        CPPUNIT_ASSERT_MESSAGE(o.text, o.fs != nullptr);
-        const std::string text = fsstat_text(o.fs.get());
-        CPPUNIT_ASSERT_EQUAL_MESSAGE(text,
-            std::string("lazy-count, attr2, projid32bit, crc"),
-            fsstat_value(text, "Features 2"));
     }
 };
 

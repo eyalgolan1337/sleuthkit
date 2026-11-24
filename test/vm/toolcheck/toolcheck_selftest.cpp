@@ -778,34 +778,32 @@ const char GUEST_XFS[] =
 const char FSSTAT_XFS[] =
     "FILE SYSTEM INFORMATION\n"
     "--------------------------------------------\n"
-    "File System Type: XFS\n"
-    "Volume Name: \n"
+    "File System Type : XFS\n"
+    "Volume Name : \n"
     "Volume ID: 58b65ad6-8935-4dc6-91b5-006c193f477d\n"
     "Version: 5\n"
-    "Version Flags: nlink, align, logv2, extflg, dirv2, morebits\n"
-    "Features 2: lazy-count, attr2, projid32bit, crc\n"
-    "Compatible Features: none\n"
-    "Read-Only Compatible Features: finobt, rmapbt, reflink, inobtcount\n"
-    "Incompatible Features: ftype, sparse, bigtime, nrext64\n"
-    "Log Incompatible Features: none\n"
+    "InCompat Features: ftype, sparse, bigtime, nrext64\n"
+    "Read Only Compat Features : finobt, rmapbt, reflink, inobtcount\n"
     "\n"
     "METADATA INFORMATION\n"
     "--------------------------------------------\n"
     "Inode Range: 0 - 950272\n"
-    "Root Directory: 128\n"
-    "Inode Size: 512\n"
-    "Inodes per Block: 8\n"
+    "Root Inode : 128\n"
+    "Inode Count : 64\n"
+    "Free Inode Count : 61\n"
+    "Inode Size : 512\n"
+    "Inode per Block : 8\n"
+    "Inode max persentage : 25\n"
     "\n"
     "CONTENT INFORMATION\n"
     "--------------------------------------------\n"
-    "Sector Size: 512\n"
-    "Block Size: 4096\n"
-    "Block Range: 0 - 76799\n"
-    "Directory Block Size: 4096\n"
-    "Allocation Group Count: 4\n"
-    "Allocation Group Size: 19200 blocks\n"
-    "Log: internal, blocks 38404 - 54787\n"
-    "Realtime Device: none\n";
+    "Block Range : 0 - 76799\n"
+    "Block Size : 4096\n"
+    "Block Count : 76800\n"
+    "Free Block Count : 56123\n"
+    "Allocation Group Block Size : 19200\n"
+    "Allocation Group Count : 4\n"
+    "Sector Size : 512\n";
 
 // fsstat of the sample ext4 image (abridged after the first block group).
 const char FSSTAT_EXT4[] =
@@ -963,7 +961,7 @@ class FsstatTest : public CppUnit::TestFixture {
         const Summary v4 = fsstat_run(
             {0,
                 replace(replace(FSSTAT_XFS, "Version: 5", "Version: 4"),
-                    "Volume Name: \n", "Volume Name: tsk data\n"),
+                    "Volume Name : \n", "Volume Name : tsk data\n"),
                 ""},
             want);
         CPPUNIT_ASSERT_EQUAL(std::string("4"), field(v4, "version"));
@@ -981,12 +979,11 @@ class FsstatTest : public CppUnit::TestFixture {
         // Each field comes from its own line.
         const Summary sizes = fsstat_run(
             {0,
-                replace(replace(replace(FSSTAT_XFS, "Inode Size: 512",
-                                    "Inode Size: 1024"),
-                            "Allocation Group Count: 4",
-                            "Allocation Group Count: 7"),
-                    "Block Size: 4096\nBlock Range",
-                    "Block Size: 1024\nBlock Range"),
+                replace(replace(replace(FSSTAT_XFS, "Inode Size : 512",
+                                    "Inode Size : 1024"),
+                            "Allocation Group Count : 4",
+                            "Allocation Group Count : 7"),
+                    "Block Size : 4096", "Block Size : 1024"),
                 ""},
             want);
         CPPUNIT_ASSERT_EQUAL(std::string("1024"), field(sizes, "inode-size"));
@@ -995,8 +992,8 @@ class FsstatTest : public CppUnit::TestFixture {
         // A line missing.
         for (const char *line :
             {"Volume ID: 58b65ad6-8935-4dc6-91b5-006c193f477d\n",
-                "Version: 5\n", "Inode Size: 512\n", "Block Size: 4096\n",
-                "Allocation Group Count: 4\n", "Volume Name: \n"}) {
+                "Version: 5\n", "Inode Size : 512\n", "Block Size : 4096\n",
+                "Allocation Group Count : 4\n", "Volume Name : \n"}) {
             const Summary run2 =
                 fsstat_run({0, replace(FSSTAT_XFS, line, ""), ""}, want);
             CPPUNIT_ASSERT_EQUAL_MESSAGE(

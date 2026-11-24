@@ -78,15 +78,19 @@ fsstat_text(TSK_FS_INFO *fs)
     return text;
 }
 
-// The value of fsstat's "<key>: <value>" line, or "(no line)".
+// The value of fsstat's "<key>: <value>" or "<key> : <value>" line, or
+// "(no line)".
 inline std::string
 fsstat_value(const std::string &text, const std::string &key)
 {
     std::istringstream in(text);
     std::string line;
     while (std::getline(in, line)) {
-        if (line.compare(0, key.size() + 2, key + ": ") == 0) {
-            return line.substr(key.size() + 2);
+        for (const char *sep : {": ", " : "}) {
+            const std::string prefix = key + sep;
+            if (line.compare(0, prefix.size(), prefix) == 0) {
+                return line.substr(prefix.size());
+            }
         }
     }
     return "(no line)";
