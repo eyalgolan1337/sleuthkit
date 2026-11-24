@@ -587,7 +587,7 @@ On the host, the validate command runs it before collecting the VM's results; ga
 
 ## XFS fixture images
 
-Small XFS images, committed in `test/vm/fixtures/xfs/`, that tests can use with no Validation VM, network or root. They cover format variants that the Validation VM's disk doesn't have, such as v4 and 512-byte blocks. Each **Fixture image** is committed xz-compressed, as `<variant>.img.xz`, next to its expected Manifest, `<variant>.manifest.xz` (xz-compressed too: the 64 KiB variant's Manifest alone is 5.6 MB of text).
+Small XFS images, committed in `test/vm/fixtures/xfs/`, that tests can use with no Validation VM, network or root. They cover format variants that the Validation VM's disk doesn't have, such as v4 and 512-byte blocks. The fs layer's unit tests (`unit_tests/fs/`, see `docs/llm/fs.md`, "Unit tests") unpack them at `make check` time and compare libtsk's walk of each with its Manifest. Each **Fixture image** is committed xz-compressed, as `<variant>.img.xz`, next to its expected Manifest, `<variant>.manifest.xz` (xz-compressed too: the 64 KiB variant's Manifest alone is 5.6 MB of text).
 
 | Variant | `mkfs.xfs` options | Image size | Block size | Directory block | Inode size | Format |
 | --- | --- | --- | --- | --- | --- | --- |

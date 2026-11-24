@@ -185,6 +185,14 @@ tools/*/*/*.exe
 unit_tests/base/*.log
 unit_tests/base/*.trs
 unit_tests/base/test_base
+unit_tests/fs/*.log
+unit_tests/fs/*.trs
+unit_tests/fs/test_fs
+# Fixture images and the ext image, unpacked and made by make check
+unit_tests/fs/xfs/
+unit_tests/fs/xfs.tmp/
+unit_tests/fs/xfs-fixtures.stamp
+unit_tests/fs/ext-small.img*
 # EMACS backup files
 *~
 

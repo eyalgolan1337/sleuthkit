@@ -97,9 +97,9 @@ Implementations:
 | Logical directory | `logical_fs.cpp`, `tsk_logical_fs.h` |
 | Raw, swap | `rawfs.c`, `swapfs.c` |
 
-Most files are C (`.c`); `ntfs_dent.cpp`, `fatfs_dent.cpp`, `yaffs.cpp`, `logical_fs.cpp`, `walk_cpp.cpp`, `encryptionHelper.cpp` and the APFS files are C++. Headers included by the C files (`tsk_fs.h` outside its `__cplusplus` block, `tsk_fs_i.h`, the per-file-system `tsk_*.h`) must stay valid C. There is no XFS or Btrfs support in this release.
+Most files are C (`.c`); `ntfs_dent.cpp`, `fatfs_dent.cpp`, `yaffs.cpp`, `logical_fs.cpp`, `walk_cpp.cpp`, `encryptionHelper.cpp` and the APFS files are C++. Headers included by the C files (`tsk_fs.h` outside its `__cplusplus` block, `tsk_fs_i.h`, the per-file-system `tsk_*.h`) must stay valid C. There is no XFS or Btrfs support in this release. The fork is adding read-only XFS support (#11, in steps #37 to #45); until it lands, autodetection does not recognise XFS (see "Known defects and traps", item 25).
 
-Tests that exercise this layer are the standalone programs in `tests/` (`read_apis.cpp`, `fs_fname_apis.cpp`, `fs_attrlist_apis.cpp`, `fs_thread_test.cpp`, driven by `tests/runtests.sh`, which needs external test images); `unit_tests/` holds CppUnit tests for `tsk/base` only (see `build-and-test.md`). Runnable usage samples are in `samples/`.
+Tests that exercise this layer are the standalone programs in `tests/` (`read_apis.cpp`, `fs_fname_apis.cpp`, `fs_attrlist_apis.cpp`, `fs_thread_test.cpp`, driven by `tests/runtests.sh`, which needs external test images); `unit_tests/fs/` holds this layer's CppUnit tests (see "Unit tests" below; `unit_tests/base/` tests `tsk/base`, see `build-and-test.md`). Runnable usage samples are in `samples/`.
 
 ## Which API for which task
 
@@ -438,6 +438,29 @@ Use `ext2fs.c` (simplest complete Unix-style one) as the template; `yaffs.cpp` s
 
 When changing an existing implementation, keep these invariants: `ftype` is specific; `last_inum` is the orphan directory; every failure path of the opener calls `tsk_fs_free`; a new opener must not accept another file system's volumes, or autodetection of that file system starts failing with `TSK_ERR_FS_MULTTYPE`.
 
+## Unit tests (`unit_tests/fs/`)
+
+The fs layer's CppUnit tests are one program, `test_fs`, run by `make check` (when `unit_tests/` is built at all, see `build-and-test.md`, "Tests") and directly as `unit_tests/fs/test_fs` from any directory. They use the public API only: the test files and the harness include `<tsk/libtsk.h>` and nothing else from `tsk/`. Here that is a convention, not enforced: the Makefile puts the source tree on the include path, unlike the harness's own build, whose self-test checks it (`test/vm/README.md`, "The harness").
+
+| File | Contents |
+| --- | --- |
+| `test_fs.cpp` | `main`: runs every fixture in the CppUnit registry |
+| `xfs_fixtures_test.cpp` | One test per XFS Fixture image (`v4`, `v4-512`, `v5-1k`, `v5-64k`, `v5`) |
+| `manifest_check.h`, `manifest_check.cpp` | The Manifest-comparison helper, `fstest::check_walk` |
+| `manifest_check_test.cpp` | The helper's tests, on the ext4 image below |
+| `make-ext-image.sh` | Builds that ext4 image |
+| `fs_test_data.h` | `fstest::data_path`: where the test data is |
+| `vm_*.cpp` | One-line wrappers that compile the validation setup's harness and comparison step (`test/vm/harness/`, `test/vm/manifest/`) into `test_fs` |
+
+**Test data.** Before the tests run, `make check` (`check_DATA` in `Makefile.am`) writes it into the build directory, which `test_fs` finds through `FS_TEST_DATA_DIR`. Nothing of it is committed, and none of it needs network, root or mounting.
+
+- `xfs/<variant>.img` and `xfs/<variant>.manifest`: the XFS Fixture images and their expected Manifests, unpacked with `xz -d` from `test/vm/fixtures/xfs/` (see `test/vm/README.md`, "XFS fixture images"). The images are sparse, about 25 MB on disk for all five.
+- `ext-small.img`: a 1 MiB ext4 image built by `make-ext-image.sh` with `mkfs.ext4` and `debugfs` (e2fsprogs). The script fixes every compared field, so the image always walks the same; its expected Manifest is `EXT_SMALL` in `manifest_check_test.cpp`.
+
+**The helper.** `fstest::check_walk(image, expected, known_failures)` walks the file system in `image` (at offset 0, as in the Fixture images) with the harness (`tsk_img_open_utf8`, `tsk_fs_open_img` with `TSK_FS_TYPE_DETECT`, every allocated name from the root, SHA-256 of each regular file) and compares the walk with the expected Manifest (a `tskval::Manifest` or a file) under the Strict rules of the comparison step. It returns `passed`, the findings, and a `report` with one line per difference that names the encoded path, the field and both values ("Ground truth" is the expected Manifest), for example `/sub/hello.txt: size differs: Ground truth 7, run 6`. Assert with `CPPUNIT_ASSERT_MESSAGE(r.report, r.passed)`. `known_failures` tolerates expected differences, one per line as `<subject> <difference> [comment]` (a Known failure line without its check and partition columns): `/dirs/btree missing`, or `* error:fs-open` for a walk that fails as a whole. A line that no longer matches fails, so remove it when the gap is closed.
+
+**Adding tests.** Add a `*_test.cpp` file with a fixture registered by `CPPUNIT_TEST_SUITE_REGISTRATION` to `test_fs_SOURCES`; no other build change is needed. Until XFS support lands, each Fixture test expects the image to open as a raw image, autodetection to fail with a TSK error, and the walk to fail as a whole (`fs-open`); the XFS steps of #11 replace these expectations as they add support.
+
 ## Where the upstream Doxygen docs are wrong or silent
 
 - `tsk/docs/fs.dox`, "Virtual Files": says the virtual status of `$OrphanFiles` shows in `TSK_FS_META::flags`. There is no such flag; it shows in `meta->type` (`TSK_FS_META_TYPE_VIRT_DIR`) and `name->type`.
@@ -474,3 +497,4 @@ Each item was confirmed by reading the named symbol in this repository at releas
 22. **ext4 timestamps: unsigned seconds, epoch bits ignored** (`ext2fs.c`, `ext2fs_dinode_copy`): the 32-bit seconds are read with `tsk_getu32`, and for large inodes only `*_extra >> 2` (the nanoseconds) is used; the two epoch bits are dropped. By the ext4 on-disk format the 32-bit value is signed and the epoch bits extend it, so a time before 1970 comes back about 136 years late (−1500000000 reads as 2794967296), and a time after 2106 would wrap. Found by the harness self-test (`test/vm/harness/expected-differences.txt`).
 23. **ext4 slow symlinks with extents have no target** (`ext2fs.c`, `ext2fs_dinode_copy`): `meta->link` is filled from the inode for a fast symlink (under 60 bytes) and from the direct blocks only in the block-map branch. A slow symlink in an extent-mapped inode, the ext4 default, gets `meta->link == NULL`. Found by the harness self-test.
 24. **Phantom allocated names in large ext4 htree directories** (`ext2fs_dent.c`, `ext2fs_dent_parse_block`): an htree interior node block (`dx_node`) starts with a fake dirent with `name_len` 0. The parser rejects that entry as invalid before setting `dellen`, then scans the node's `(hash, block)` pairs 4 bytes at a time as if they were live dirents. Any 8 bytes that look like a dirent become a name flagged `TSK_FS_NAME_FLAG_ALLOC`, usually with a one-byte name and a free inode. Only directories with interior index nodes (tens of thousands of entries) are affected. Found by the Test corpus on the Validation VM (#32).
+25. **No XFS support yet** (`fs_open.c`, `FS_OPENERS`): 4.15 has no XFS opener, so autodetection of an XFS file system fails, with `TSK_ERR_FS_UNKTYPE` ("Cannot determine file system type") or, when the content looks random, `TSK_ERR_FS_POSSIBLY_ENCRYPTED` ("Possible encryption detected", the entropy fallback). Each XFS Fixture image gives `TSK_ERR_FS_UNKTYPE` (seen with the harness; the unit tests assert only that autodetection fails with a TSK error). The fork is adding read-only XFS support in #11; `unit_tests/fs/xfs_fixtures_test.cpp` asserts the current behaviour until then.
