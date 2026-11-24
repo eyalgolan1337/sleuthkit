@@ -120,12 +120,13 @@ Manifest istat_run(
 Summary guest_summary(const std::string &raw);
 
 // The run summary of fsstat's output, in the same fields. It reads the ext2/3/4
-// output of release 4.15.0; another file system type, or a missing line, is
-// "tool-output" until this check learns its output. A failed fsstat is an
+// output of release 4.15.0 and the fork's XFS output (tsk/fs/xfs.cpp); another
+// file system type, or a missing line, is "tool-output". A failed fsstat is an
 // !error summary (set_tool_error's codes). ext fsstat prints the UUID as two
 // 64-bit hex numbers without leading zeros ("Volume ID"); it is read as the
 // expected UUID if it is exactly how that one prints, as a UUID if it has
-// all 32 digits, and as "Volume ID <digits>" otherwise.
+// all 32 digits, and as "Volume ID <digits>" otherwise. XFS fsstat prints it
+// as a UUID, and the version as "Version: 4" or "Version: 5".
 Summary fsstat_run(const ToolOutput &t, const Summary &expected);
 
 } // namespace tskval

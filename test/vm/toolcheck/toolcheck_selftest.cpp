@@ -773,6 +773,40 @@ const char GUEST_XFS[] =
     "parent=0\n"
     "log      =internal log           bsize=4096   blocks=16384, version=2\n";
 
+// fsstat of an XFS v5 file system like GUEST_XFS's (the fork's XFS output,
+// #38), with no label.
+const char FSSTAT_XFS[] =
+    "FILE SYSTEM INFORMATION\n"
+    "--------------------------------------------\n"
+    "File System Type: XFS\n"
+    "Volume Name: \n"
+    "Volume ID: 58b65ad6-8935-4dc6-91b5-006c193f477d\n"
+    "Version: 5\n"
+    "Version Flags: nlink, align, logv2, extflg, dirv2, morebits\n"
+    "Features 2: lazy-count, attr2, projid32bit, crc\n"
+    "Compatible Features: none\n"
+    "Read-Only Compatible Features: finobt, rmapbt, reflink, inobtcount\n"
+    "Incompatible Features: ftype, sparse, bigtime, nrext64\n"
+    "Log Incompatible Features: none\n"
+    "\n"
+    "METADATA INFORMATION\n"
+    "--------------------------------------------\n"
+    "Inode Range: 0 - 950272\n"
+    "Root Directory: 128\n"
+    "Inode Size: 512\n"
+    "Inodes per Block: 8\n"
+    "\n"
+    "CONTENT INFORMATION\n"
+    "--------------------------------------------\n"
+    "Sector Size: 512\n"
+    "Block Size: 4096\n"
+    "Block Range: 0 - 76799\n"
+    "Directory Block Size: 4096\n"
+    "Allocation Group Count: 4\n"
+    "Allocation Group Size: 19200 blocks\n"
+    "Log: internal, blocks 38404 - 54787\n"
+    "Realtime Device: none\n";
+
 // fsstat of the sample ext4 image (abridged after the first block group).
 const char FSSTAT_EXT4[] =
     "FILE SYSTEM INFORMATION\n"
@@ -838,6 +872,7 @@ class FsstatTest : public CppUnit::TestFixture {
     CPPUNIT_TEST(testGuestSummaryOfXfs);
     CPPUNIT_TEST(testGuestSummaryErrors);
     CPPUNIT_TEST(testFsstatOfExt4MatchesGuest);
+    CPPUNIT_TEST(testFsstatOfXfsMatchesGuest);
     CPPUNIT_TEST(testVolumeIdWithoutLeadingZeros);
     CPPUNIT_TEST(testWrongVolumeId);
     CPPUNIT_TEST(testFsstatFailures);
@@ -918,6 +953,57 @@ class FsstatTest : public CppUnit::TestFixture {
         CPPUNIT_ASSERT_EQUAL(std::string(""), field(nolabel, "label"));
     }
 
+    void testFsstatOfXfsMatchesGuest()
+    {
+        const Summary want = guest_summary(GUEST_XFS);
+        const Summary run = fsstat_run({0, FSSTAT_XFS, ""}, want);
+        CPPUNIT_ASSERT_MESSAGE(run.error_detail, !run.has_error);
+        CPPUNIT_ASSERT(want.fields == run.fields);
+        // v4, with a label.
+        const Summary v4 = fsstat_run(
+            {0,
+                replace(replace(FSSTAT_XFS, "Version: 5", "Version: 4"),
+                    "Volume Name: \n", "Volume Name: tsk data\n"),
+                ""},
+            want);
+        CPPUNIT_ASSERT_EQUAL(std::string("4"), field(v4, "version"));
+        CPPUNIT_ASSERT_EQUAL(std::string("tsk data"), field(v4, "label"));
+        // XFS prints the UUID as it is: a different one is read as printed.
+        const Summary other = fsstat_run(
+            {0,
+                replace(FSSTAT_XFS, "58b65ad6-8935-4dc6-91b5-006c193f477d",
+                    "58b65ad6-8935-4dc6-91b5-006c193f4700"),
+                ""},
+            want);
+        CPPUNIT_ASSERT_EQUAL(
+            std::string("58b65ad6-8935-4dc6-91b5-006c193f4700"),
+            field(other, "uuid"));
+        // Each field comes from its own line.
+        const Summary sizes = fsstat_run(
+            {0,
+                replace(replace(replace(FSSTAT_XFS, "Inode Size: 512",
+                                    "Inode Size: 1024"),
+                            "Allocation Group Count: 4",
+                            "Allocation Group Count: 7"),
+                    "Block Size: 4096\nBlock Range",
+                    "Block Size: 1024\nBlock Range"),
+                ""},
+            want);
+        CPPUNIT_ASSERT_EQUAL(std::string("1024"), field(sizes, "inode-size"));
+        CPPUNIT_ASSERT_EQUAL(std::string("7"), field(sizes, "group-count"));
+        CPPUNIT_ASSERT_EQUAL(std::string("1024"), field(sizes, "block-size"));
+        // A line missing.
+        for (const char *line :
+            {"Volume ID: 58b65ad6-8935-4dc6-91b5-006c193f477d\n",
+                "Version: 5\n", "Inode Size: 512\n", "Block Size: 4096\n",
+                "Allocation Group Count: 4\n", "Volume Name: \n"}) {
+            const Summary run2 =
+                fsstat_run({0, replace(FSSTAT_XFS, line, ""), ""}, want);
+            CPPUNIT_ASSERT_EQUAL_MESSAGE(
+                line, std::string("tool-output"), run2.error_code);
+        }
+    }
+
     void testVolumeIdWithoutLeadingZeros()
     {
         // fsstat prints the UUID as two little-endian 64-bit numbers in hex,
@@ -966,12 +1052,12 @@ class FsstatTest : public CppUnit::TestFixture {
         CPPUNIT_ASSERT_EQUAL(std::string("fs-open"), run.error_code);
         run = fsstat_run({1, "", "Error reading superblock\n"}, want);
         CPPUNIT_ASSERT_EQUAL(std::string("tool-failed"), run.error_code);
-        // A file system type whose fsstat output this check can't read yet.
+        // A file system type whose fsstat output this check can't read.
         run = fsstat_run(
-            {0, "FILE SYSTEM INFORMATION\nFile System Type: XFS\n", ""}, want);
+            {0, "FILE SYSTEM INFORMATION\nFile System Type: NTFS\n", ""}, want);
         CPPUNIT_ASSERT_EQUAL(std::string("tool-output"), run.error_code);
         CPPUNIT_ASSERT_MESSAGE(run.error_detail,
-            run.error_detail.find("XFS") != std::string::npos);
+            run.error_detail.find("NTFS") != std::string::npos);
         // ext4 output with a line missing.
         run = fsstat_run(
             {0, replace(FSSTAT_EXT4, "Block Size: 1024\n", ""), ""}, want);

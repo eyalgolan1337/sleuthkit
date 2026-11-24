@@ -1,8 +1,9 @@
 /*
  * The XFS Fixture images (test/vm/fixtures/xfs/, unpacked by make check into
- * xfs/), read through the public API. Until XFS support exists, each image
- * opens as an image and file system autodetection rejects it with a TSK
- * error; the XFS tickets of #11 replace these expectations as they go.
+ * xfs/), read through the public API. Each image is recognised as XFS, by
+ * autodetection and by the type name "xfs", and its superblock facts are the
+ * ones mkfs.xfs was given (test/vm/README.md, "XFS fixture images"). The XFS
+ * tickets of #11 add the walk tests as they go.
  */
 #include "fs_test_data.h"
 #include "manifest_check.h"
@@ -13,107 +14,384 @@
 
 #include <cppunit/extensions/HelperMacros.h>
 
+#include <cstdio>
 #include <fstream>
+#include <memory>
+#include <sstream>
 #include <string>
 
 namespace {
 
+struct ImgCloser {
+    void operator()(TSK_IMG_INFO *img) const
+    {
+        tsk_img_close(img);
+    }
+};
+struct FsCloser {
+    void operator()(TSK_FS_INFO *fs) const
+    {
+        tsk_fs_close(fs);
+    }
+};
+using ImgPtr = std::unique_ptr<TSK_IMG_INFO, ImgCloser>;
+using FsPtr = std::unique_ptr<TSK_FS_INFO, FsCloser>;
+
+std::string
+error_text()
+{
+    const char *msg = tsk_error_get();
+    return msg != nullptr ? msg : "";
+}
+
+// One Fixture image and what mkfs.xfs made of it: the mkfs.xfs options and
+// the xfs_info output in the comment at the top of its Manifest.
+struct Fixture {
+    const char *variant;
+    size_t entries;   // test/vm/README.md, "XFS fixture images"
+    const char *uuid; // -m uuid=
+    unsigned version; // crc=1: 5, crc=0: 4
+    unsigned block_size;
+    uint64_t blocks;
+    unsigned inode_size;
+    unsigned ag_count;
+    unsigned ag_blocks;
+    unsigned dir_block_size; // naming bsize
+};
+
+const Fixture V4 = {"v4", 1006, "5f4b0c1e-0000-4000-8000-000000000004", 4, 4096,
+    81920, 256, 4, 20480, 4096};
+const Fixture V4_512 = {"v4-512", 1006, "5f4b0c1e-0000-4000-8000-000000000512",
+    4, 512, 655360, 256, 4, 163840, 4096};
+const Fixture V5_1K = {"v5-1k", 1181, "5f4b0c1e-0000-4000-8000-000000001024", 5,
+    1024, 327680, 512, 4, 81920, 4096};
+const Fixture V5_64K = {"v5-64k", 18821, "5f4b0c1e-0000-4000-8000-000000065536",
+    5, 65536, 8192, 512, 4, 2048, 65536};
+const Fixture V5 = {"v5", 1181, "5f4b0c1e-0000-4000-8000-000000000005", 5, 4096,
+    81920, 512, 4, 20480, 4096};
+
+// What the file system's fsstat callback prints (fs->fsstat, as the fsstat
+// tool calls it).
+std::string
+fsstat_text(TSK_FS_INFO *fs)
+{
+    FILE *f = tmpfile();
+    CPPUNIT_ASSERT_MESSAGE("tmpfile failed", f != nullptr);
+    const uint8_t rc = fs->fsstat(fs, f);
+    std::string text;
+    CPPUNIT_ASSERT_MESSAGE("fseek failed", fseek(f, 0, SEEK_SET) == 0);
+    char buf[4096];
+    size_t n = 0;
+    while ((n = fread(buf, 1, sizeof(buf), f)) > 0) {
+        text.append(buf, n);
+    }
+    fclose(f);
+    CPPUNIT_ASSERT_EQUAL_MESSAGE(
+        "fsstat failed: " + error_text(), 0, static_cast<int>(rc));
+    return text;
+}
+
+// The value of fsstat's "<key>: <value>" line, or "(no line)".
+std::string
+fsstat_value(const std::string &text, const std::string &key)
+{
+    std::istringstream in(text);
+    std::string line;
+    while (std::getline(in, line)) {
+        if (line.compare(0, key.size() + 2, key + ": ") == 0) {
+            return line.substr(key.size() + 2);
+        }
+    }
+    return "(no line)";
+}
+
+// The volume ID as a canonical UUID ("" unless it has 16 bytes).
+std::string
+volume_id(const TSK_FS_INFO *fs)
+{
+    if (fs->fs_id_used != 16) {
+        return "";
+    }
+    std::string out;
+    char hex[3];
+    for (size_t i = 0; i < 16; ++i) {
+        if (i == 4 || i == 6 || i == 8 || i == 10) {
+            out += '-';
+        }
+        snprintf(hex, sizeof(hex), "%02x", fs->fs_id[i]);
+        out += hex;
+    }
+    return out;
+}
+
+std::string
+image_path(const Fixture &f)
+{
+    return fstest::data_path(std::string("xfs/") + f.variant + ".img");
+}
+
+ImgPtr
+open_image(const std::string &path)
+{
+    const char *paths[] = {path.c_str()};
+    tsk_error_reset();
+    ImgPtr img(tsk_img_open_utf8(1, paths, TSK_IMG_TYPE_DETECT, 0));
+    CPPUNIT_ASSERT_MESSAGE(
+        "tsk_img_open_utf8 failed on " + path + ": " + error_text(),
+        img != nullptr);
+    return img;
+}
+
+tskval::Manifest
+read_manifest(const Fixture &f)
+{
+    const std::string path =
+        fstest::data_path(std::string("xfs/") + f.variant + ".manifest");
+    std::ifstream in(path, std::ios::binary);
+    CPPUNIT_ASSERT_MESSAGE(path + ": no unpacked Manifest", in.good());
+    tskval::Manifest manifest;
+    std::string error;
+    const bool read = tskval::read_manifest(in, manifest, error);
+    CPPUNIT_ASSERT_MESSAGE(path + ": " + error, read);
+    CPPUNIT_ASSERT_MESSAGE(path + ": Manifest has !error", !manifest.has_error);
+    CPPUNIT_ASSERT_EQUAL_MESSAGE(
+        path + ": Manifest entries", f.entries, manifest.entries.size());
+    return manifest;
+}
+
+uint64_t
+root_inode(const tskval::Manifest &m)
+{
+    for (const tskval::Entry &e : m.entries) {
+        if (e.path == "/") {
+            return e.inode;
+        }
+    }
+    CPPUNIT_FAIL("the Manifest has no / entry");
+    return 0;
+}
+
 class XfsFixturesTest : public CppUnit::TestFixture {
     CPPUNIT_TEST_SUITE(XfsFixturesTest);
-    CPPUNIT_TEST(testV4);
-    CPPUNIT_TEST(testV4Blocks512);
-    CPPUNIT_TEST(testV5Blocks1k);
-    CPPUNIT_TEST(testV5Blocks64k);
-    CPPUNIT_TEST(testV5);
+    CPPUNIT_TEST(testDetectedAsXfs);
+    CPPUNIT_TEST(testOpenedByTypeName);
+    CPPUNIT_TEST(testGeometry);
+    CPPUNIT_TEST(testFsstat);
+    CPPUNIT_TEST(testLaterStepsFailWithTskErrors);
+    CPPUNIT_TEST(testWalkFailsAtTheRoot);
     CPPUNIT_TEST_SUITE_END();
 
   public:
-    void testV4()
+    // Autodetection recognises every variant as XFS, and only as XFS (a
+    // second match would fail with TSK_ERR_FS_MULTTYPE), with the root
+    // directory's inode that the Manifest records for "/".
+    void testDetectedAsXfs()
     {
-        check_fixture("v4", 1006);
+        for (const Fixture &f : {V4, V4_512, V5_1K, V5_64K, V5}) {
+            const std::string v = f.variant;
+            const tskval::Manifest manifest = read_manifest(f);
+            ImgPtr img = open_image(image_path(f));
+            CPPUNIT_ASSERT_EQUAL_MESSAGE(v + ": image type",
+                static_cast<int>(TSK_IMG_TYPE_RAW),
+                static_cast<int>(img->itype));
+            FsPtr fs(tsk_fs_open_img(img.get(), 0, TSK_FS_TYPE_DETECT));
+            CPPUNIT_ASSERT_MESSAGE(
+                v + ": autodetection failed: " + error_text(), fs != nullptr);
+            CPPUNIT_ASSERT_EQUAL_MESSAGE(v + ": ftype",
+                static_cast<int>(TSK_FS_TYPE_XFS), static_cast<int>(fs->ftype));
+            CPPUNIT_ASSERT_EQUAL_MESSAGE(v + ": root inode",
+                root_inode(manifest), static_cast<uint64_t>(fs->root_inum));
+        }
     }
 
-    void testV4Blocks512()
+    // "xfs" is a type name (what tools' -f takes), and the explicit type
+    // opens every variant.
+    void testOpenedByTypeName()
     {
-        check_fixture("v4-512", 1006);
+        const TSK_FS_TYPE_ENUM type = tsk_fs_type_toid_utf8("xfs");
+        CPPUNIT_ASSERT_EQUAL(
+            static_cast<int>(TSK_FS_TYPE_XFS), static_cast<int>(type));
+        CPPUNIT_ASSERT_EQUAL(std::string("xfs"),
+            std::string(tsk_fs_type_toname(TSK_FS_TYPE_XFS)));
+        CPPUNIT_ASSERT(TSK_FS_TYPE_ISXFS(TSK_FS_TYPE_XFS));
+        CPPUNIT_ASSERT(TSK_FS_TYPE_ISXFS(TSK_FS_TYPE_XFS_DETECT));
+        CPPUNIT_ASSERT(!TSK_FS_TYPE_ISXFS(TSK_FS_TYPE_EXT4));
+        for (const Fixture &f : {V4, V4_512, V5_1K, V5_64K, V5}) {
+            const std::string v = f.variant;
+            ImgPtr img = open_image(image_path(f));
+            FsPtr fs(tsk_fs_open_img(img.get(), 0, type));
+            CPPUNIT_ASSERT_MESSAGE(
+                v + ": open as xfs failed: " + error_text(), fs != nullptr);
+            CPPUNIT_ASSERT_EQUAL_MESSAGE(v + ": ftype",
+                static_cast<int>(TSK_FS_TYPE_XFS), static_cast<int>(fs->ftype));
+        }
     }
 
-    void testV5Blocks1k()
+    // The geometry in the public TSK_FS_INFO fields: blocks are the data
+    // section's, the volume ID is the UUID, and the metadata address range
+    // ends with $OrphanFiles past every inode (the root is inside it).
+    void testGeometry()
     {
-        check_fixture("v5-1k", 1181);
+        for (const Fixture &f : {V4, V4_512, V5_1K, V5_64K, V5}) {
+            const std::string v = f.variant;
+            ImgPtr img = open_image(image_path(f));
+            FsPtr fs(tsk_fs_open_img(img.get(), 0, TSK_FS_TYPE_XFS));
+            CPPUNIT_ASSERT_MESSAGE(v + ": " + error_text(), fs != nullptr);
+            CPPUNIT_ASSERT_EQUAL_MESSAGE(v + ": block size", f.block_size,
+                static_cast<unsigned>(fs->block_size));
+            CPPUNIT_ASSERT_EQUAL_MESSAGE(v + ": block count", f.blocks,
+                static_cast<uint64_t>(fs->block_count));
+            CPPUNIT_ASSERT_EQUAL_MESSAGE(v + ": first block", uint64_t{0},
+                static_cast<uint64_t>(fs->first_block));
+            CPPUNIT_ASSERT_EQUAL_MESSAGE(v + ": last block", f.blocks - 1,
+                static_cast<uint64_t>(fs->last_block));
+            CPPUNIT_ASSERT_EQUAL_MESSAGE(v + ": last block in the image",
+                f.blocks - 1, static_cast<uint64_t>(fs->last_block_act));
+            CPPUNIT_ASSERT_EQUAL_MESSAGE(
+                v + ": volume ID", std::string(f.uuid), volume_id(fs.get()));
+            CPPUNIT_ASSERT_MESSAGE(v + ": root inode outside the range",
+                fs->root_inum >= fs->first_inum &&
+                    fs->root_inum < fs->last_inum);
+            CPPUNIT_ASSERT_EQUAL_MESSAGE(v + ": $OrphanFiles",
+                static_cast<uint64_t>(fs->last_inum),
+                static_cast<uint64_t>(TSK_FS_ORPHANDIR_INUM(fs)));
+        }
     }
 
-    void testV5Blocks64k()
+    // fsstat shows the superblock facts that xfs_info shows.
+    void testFsstat()
     {
-        check_fixture("v5-64k", 18821);
+        for (const Fixture &f : {V4, V4_512, V5_1K, V5_64K, V5}) {
+            const std::string v = f.variant;
+            ImgPtr img = open_image(image_path(f));
+            FsPtr fs(tsk_fs_open_img(img.get(), 0, TSK_FS_TYPE_XFS));
+            CPPUNIT_ASSERT_MESSAGE(v + ": " + error_text(), fs != nullptr);
+            const std::string text = fsstat_text(fs.get());
+            const auto expect = [&](const std::string &key,
+                                    const std::string &want) {
+                std::string msg = v;
+                msg.append(": fsstat ").append(key).append("\n").append(text);
+                CPPUNIT_ASSERT_EQUAL_MESSAGE(
+                    msg, want, fsstat_value(text, key));
+            };
+            expect("File System Type", "XFS");
+            expect("Volume Name", "tsk-" + v);
+            expect("Volume ID", f.uuid);
+            expect("Version", std::to_string(f.version));
+            expect("Block Size", std::to_string(f.block_size));
+            expect("Block Range", "0 - " + std::to_string(f.blocks - 1));
+            expect("Inode Size", std::to_string(f.inode_size));
+            expect("Allocation Group Count", std::to_string(f.ag_count));
+            expect("Allocation Group Size",
+                std::to_string(f.ag_blocks) + " blocks");
+            expect("Directory Block Size", std::to_string(f.dir_block_size));
+            expect("Sector Size", "512");
+            expect("Root Directory", std::to_string(fs->root_inum));
+            expect("Realtime Device", "none");
+            if (f.version == 5) {
+                // xfs_info: finobt=1 rmapbt=1 reflink=1 inobtcount=1;
+                // ftype=1 sparse=1 bigtime=1 nrext64=1.
+                expect("Read-Only Compatible Features",
+                    "finobt, rmapbt, reflink, inobtcount");
+                expect(
+                    "Incompatible Features", "ftype, sparse, bigtime, nrext64");
+                expect("Features 2", "lazy-count, attr2, projid32bit, crc");
+            }
+            else {
+                // xfs_info: crc=0, ftype=1, lazy-count=1, projid32bit=1.
+                expect("Features 2", "lazy-count, attr2, projid32bit, ftype");
+                expect("Incompatible Features", "(no line)");
+            }
+        }
     }
 
-    void testV5()
+    // What later steps of #11 implement fails with a TSK error, not a crash:
+    // inode lookup (#39), directories (#40), istat (#39), the inode and
+    // block walks (#44).
+    void testLaterStepsFailWithTskErrors()
     {
-        check_fixture("v5", 1181);
+        for (const Fixture &f : {V4, V5}) {
+            const std::string v = f.variant;
+            ImgPtr img = open_image(image_path(f));
+            FsPtr fs(tsk_fs_open_img(img.get(), 0, TSK_FS_TYPE_DETECT));
+            CPPUNIT_ASSERT_MESSAGE(v + ": " + error_text(), fs != nullptr);
+            const auto failed = [&v](const std::string &what) {
+                std::string msg = v;
+                msg.append(": ").append(what).append(" without a TSK error");
+                CPPUNIT_ASSERT_MESSAGE(
+                    msg, tsk_error_get_errno() != 0 && !error_text().empty());
+                tsk_error_reset();
+            };
+
+            tsk_error_reset();
+            TSK_FS_FILE *file =
+                tsk_fs_file_open_meta(fs.get(), nullptr, fs->root_inum);
+            CPPUNIT_ASSERT_MESSAGE(v + ": inode lookup", file == nullptr);
+            failed("inode lookup");
+
+            TSK_FS_DIR *dir = tsk_fs_dir_open_meta(fs.get(), fs->root_inum);
+            CPPUNIT_ASSERT_MESSAGE(v + ": directory open", dir == nullptr);
+            failed("directory open");
+
+            CPPUNIT_ASSERT_EQUAL_MESSAGE(v + ": directory walk", 1,
+                static_cast<int>(tsk_fs_dir_walk(fs.get(), fs->root_inum,
+                    TSK_FS_DIR_WALK_FLAG_RECURSE, count_name, nullptr)));
+            failed("directory walk");
+
+            CPPUNIT_ASSERT_EQUAL_MESSAGE(v + ": inode walk", 1,
+                static_cast<int>(
+                    tsk_fs_meta_walk(fs.get(), fs->first_inum, fs->last_inum,
+                        TSK_FS_META_FLAG_ALLOC, count_meta, nullptr)));
+            failed("inode walk");
+
+            CPPUNIT_ASSERT_EQUAL_MESSAGE(v + ": block walk", 1,
+                static_cast<int>(
+                    tsk_fs_block_walk(fs.get(), fs->first_block, fs->last_block,
+                        TSK_FS_BLOCK_WALK_FLAG_ALLOC, count_block, nullptr)));
+            failed("block walk");
+
+            FILE *devnull = tmpfile();
+            CPPUNIT_ASSERT(devnull != nullptr);
+            const uint8_t istat = fs->istat(
+                fs.get(), TSK_FS_ISTAT_NONE, devnull, fs->root_inum, 0, 0);
+            fclose(devnull);
+            CPPUNIT_ASSERT_EQUAL_MESSAGE(
+                v + ": istat", 1, static_cast<int>(istat));
+            failed("istat");
+        }
+    }
+
+    // The validate command's walk of each image opens the file system and
+    // fails as a whole at the root directory's inode (#39 reads it), with
+    // the Manifest's entries still expected.
+    void testWalkFailsAtTheRoot()
+    {
+        for (const Fixture &f : {V4, V4_512, V5_1K, V5_64K, V5}) {
+            const std::string v = f.variant;
+            const tskval::Manifest manifest = read_manifest(f);
+            const fstest::WalkCheck walk =
+                fstest::check_walk(image_path(f), manifest);
+            CPPUNIT_ASSERT_MESSAGE(v + ": " + walk.report, !walk.passed);
+            const fstest::WalkCheck tolerated =
+                fstest::check_walk(image_path(f), manifest,
+                    "* error:root XFS inode lookup comes in #39\n");
+            CPPUNIT_ASSERT_MESSAGE(
+                v + ": " + tolerated.report, tolerated.passed);
+        }
     }
 
   private:
-    // The image opens as a raw image, autodetection fails with a TSK error,
-    // and the expected Manifest is there for the walk tests, with the entry
-    // count that test/vm/README.md ("XFS fixture images") documents. The walk
-    // fails as a whole: no file system is recognised (fs-open).
-    static void check_fixture(
-        const std::string &variant, size_t expected_entries)
+    static TSK_WALK_RET_ENUM count_name(TSK_FS_FILE *, const char *, void *)
     {
-        const std::string image = fstest::data_path("xfs/" + variant + ".img");
-        const std::string manifest_path =
-            fstest::data_path("xfs/" + variant + ".manifest");
-        const char *paths[] = {image.c_str()};
-
-        tsk_error_reset();
-        TSK_IMG_INFO *img = tsk_img_open_utf8(1, paths, TSK_IMG_TYPE_DETECT, 0);
-        CPPUNIT_ASSERT_MESSAGE(variant + ": tsk_img_open_utf8 failed on " +
-                image + ": " + error_text(),
-            img != nullptr);
-        const TSK_IMG_TYPE_ENUM itype = img->itype;
-        const TSK_OFF_T size = img->size;
-        TSK_FS_INFO *fs = tsk_fs_open_img(img, 0, TSK_FS_TYPE_DETECT);
-        const uint32_t err = tsk_error_get_errno();
-        const std::string text = error_text();
-        if (fs != nullptr) {
-            tsk_fs_close(fs);
-        }
-        tsk_img_close(img);
-
-        CPPUNIT_ASSERT_EQUAL_MESSAGE(variant + ": image type",
-            static_cast<int>(TSK_IMG_TYPE_RAW), static_cast<int>(itype));
-        CPPUNIT_ASSERT_MESSAGE(variant + ": empty image", size > 0);
-        CPPUNIT_ASSERT_MESSAGE(
-            variant + ": autodetection recognised a file system",
-            fs == nullptr);
-        CPPUNIT_ASSERT_MESSAGE(
-            variant + ": autodetection failed without a TSK error",
-            err != 0 && !text.empty());
-
-        std::ifstream in(manifest_path, std::ios::binary);
-        CPPUNIT_ASSERT_MESSAGE(variant + ": no unpacked Manifest", in.good());
-        tskval::Manifest manifest;
-        std::string error;
-        const bool read = tskval::read_manifest(in, manifest, error);
-        CPPUNIT_ASSERT_MESSAGE(variant + ": Manifest: " + error, read);
-        CPPUNIT_ASSERT_MESSAGE(
-            variant + ": Manifest has !error", !manifest.has_error);
-        CPPUNIT_ASSERT_EQUAL_MESSAGE(variant + ": Manifest entries",
-            expected_entries, manifest.entries.size());
-
-        const fstest::WalkCheck walk = fstest::check_walk(image, manifest);
-        CPPUNIT_ASSERT_MESSAGE(variant + ": " + walk.report, !walk.passed);
-        const fstest::WalkCheck tolerated =
-            fstest::check_walk(image, manifest, "* error:fs-open\n");
-        CPPUNIT_ASSERT_MESSAGE(
-            variant + ": " + tolerated.report, tolerated.passed);
+        return TSK_WALK_CONT;
     }
-
-    static std::string error_text()
+    static TSK_WALK_RET_ENUM count_meta(TSK_FS_FILE *, void *)
     {
-        const char *msg = tsk_error_get();
-        return msg != nullptr ? msg : "";
+        return TSK_WALK_CONT;
+    }
+    static TSK_WALK_RET_ENUM count_block(const TSK_FS_BLOCK *, void *)
+    {
+        return TSK_WALK_CONT;
     }
 };
 

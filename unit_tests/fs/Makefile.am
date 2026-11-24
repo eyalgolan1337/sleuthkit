@@ -19,7 +19,7 @@ check_PROGRAMS = test_fs
 
 test_fs_SOURCES = test_fs.cpp fs_test_data.h \
     manifest_check.cpp manifest_check.h manifest_check_test.cpp \
-    xfs_fixtures_test.cpp \
+    xfs_fixtures_test.cpp xfs_superblock_test.cpp \
     vm_harness.cpp vm_manifest.cpp vm_compare.cpp vm_sha256.cpp
 
 # Test data, made before the tests run: the Fixture images and their expected
@@ -58,4 +58,4 @@ CLEANFILES = xfs-fixtures.stamp ext-small.img
 MAINTAINERCLEANFILES = Makefile.in
 
 clean-local:
-	-rm -rf xfs xfs.tmp ext-small.img.tmp ext-small.img.tmp.d
+	-rm -rf xfs xfs.tmp ext-small.img.tmp ext-small.img.tmp.d xfs-sb-*.img

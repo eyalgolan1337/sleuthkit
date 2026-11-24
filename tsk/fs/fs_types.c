@@ -38,6 +38,7 @@ typedef struct {
  * All unique TSK_FS_TYPE_ENUM values should be in here with a unique 
  * name so that we can map between values and names. 
  */
+// clang-format off
 static FS_TYPES fs_type_table[] = {
     {"ntfs", TSK_FS_TYPE_NTFS, "NTFS"}, // NTFS == NTFS_DETECT 
     {"fat", TSK_FS_TYPE_FAT_DETECT, "FAT (Auto Detection)"},
@@ -48,6 +49,7 @@ static FS_TYPES fs_type_table[] = {
 #endif
     {"yaffs2", TSK_FS_TYPE_YAFFS2, "YAFFS2"},
     {"apfs", TSK_FS_TYPE_APFS, "APFS"},
+    {"xfs", TSK_FS_TYPE_XFS, "XFS (experimental)"}, // XFS == XFS_DETECT
 	{"logical", TSK_FS_TYPE_LOGICAL, "Logical Directory"},
     {"ufs", TSK_FS_TYPE_FFS_DETECT, "UFS (Auto Detection)"},
     {"raw", TSK_FS_TYPE_RAW, "Raw Data"}, // RAW == RAW_DETECT
@@ -67,6 +69,7 @@ static FS_TYPES fs_type_table[] = {
 #endif
     {0,0,""},
 };
+// clang-format on
 
 static FS_TYPES fs_legacy_type_table[] = {
     // legacy CLI arg names

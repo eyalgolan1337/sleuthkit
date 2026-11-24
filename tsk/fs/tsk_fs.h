@@ -791,6 +791,7 @@ extern "C" {
     * version in TSK_FS_INFO.
     *
     */
+    // clang-format off
     enum TSK_FS_TYPE_ENUM {
         TSK_FS_TYPE_DETECT = 0x00000000,        ///< Use autodetection methods
         TSK_FS_TYPE_NTFS = 0x00000001,  ///< NTFS file system
@@ -822,8 +823,12 @@ extern "C" {
         TSK_FS_TYPE_APFS = 0x00010000, ///< APFS file system
         TSK_FS_TYPE_APFS_DETECT = 0x00010000, ///< APFS auto detection
 		TSK_FS_TYPE_LOGICAL = 0x00020000, ///< Logical directory (aut detection not supported)
+        // 0x00040000 is upstream's Btrfs value; left unused for compatibility.
+        TSK_FS_TYPE_XFS = 0x00080000,   ///< XFS file system (upstream's value)
+        TSK_FS_TYPE_XFS_DETECT = 0x00080000,    ///< XFS auto detection
         TSK_FS_TYPE_UNSUPP = 0xffffffff,        ///< Unsupported file system
     };
+    // clang-format on
     /* NOTE: Update bindings/java/src/org/sleuthkit/datamodel/TskData.java
      * with any changes. */
     typedef enum TSK_FS_TYPE_ENUM TSK_FS_TYPE_ENUM;
@@ -890,6 +895,15 @@ extern "C" {
     * is for a YAFFS2 file system. */
 #define TSK_FS_TYPE_ISAPFS(ftype) \
     (((ftype) & TSK_FS_TYPE_APFS_DETECT)?1:0)
+
+    /**
+    * \ingroup fslib
+    * Macro that takes a file system type and returns 1 if the type
+    * is for an XFS file system. */
+    // clang-format off
+#define TSK_FS_TYPE_ISXFS(ftype) \
+    (((ftype) & TSK_FS_TYPE_XFS_DETECT)?1:0)
+    // clang-format on
 
     /**
     * \ingroup fslib

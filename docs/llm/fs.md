@@ -95,9 +95,10 @@ Implementations:
 | YAFFS2 | `yaffs.cpp`, `tsk_yaffs.h` |
 | APFS | `apfs.cpp`, `apfs_fs.cpp`, `apfs_compat.cpp`, `apfs_open.cpp`, `tsk_apfs.h(pp)`, `apfs_fs.h(pp)`, `apfs_compat.hpp` |
 | Logical directory | `logical_fs.cpp`, `tsk_logical_fs.h` |
+| XFS (fork, read-only, in progress) | `xfs.cpp`, `tsk_xfs.h` (not installed) |
 | Raw, swap | `rawfs.c`, `swapfs.c` |
 
-Most files are C (`.c`); `ntfs_dent.cpp`, `fatfs_dent.cpp`, `yaffs.cpp`, `logical_fs.cpp`, `walk_cpp.cpp`, `encryptionHelper.cpp` and the APFS files are C++. Headers included by the C files (`tsk_fs.h` outside its `__cplusplus` block, `tsk_fs_i.h`, the per-file-system `tsk_*.h`) must stay valid C. There is no XFS or Btrfs support in this release. The fork is adding read-only XFS support (#11, in steps #37 to #45); until it lands, autodetection does not recognise XFS (see "Known defects and traps", item 25).
+Most files are C (`.c`); `ntfs_dent.cpp`, `fatfs_dent.cpp`, `yaffs.cpp`, `logical_fs.cpp`, `walk_cpp.cpp`, `encryptionHelper.cpp`, `xfs.cpp` and the APFS files are C++. Headers included by the C files (`tsk_fs.h` outside its `__cplusplus` block, `tsk_fs_i.h`, the per-file-system `tsk_*.h`) must stay valid C. Release 4.15 has no XFS or Btrfs support. The fork is adding read-only XFS support (#11, in steps #37 to #45): so far XFS is recognised and its superblock read (#38), and everything else fails with a TSK error (see "Per-file-system notes", XFS, and "Known defects and traps", item 25). There is no Btrfs support.
 
 Tests that exercise this layer are the standalone programs in `tests/` (`read_apis.cpp`, `fs_fname_apis.cpp`, `fs_attrlist_apis.cpp`, `fs_thread_test.cpp`, driven by `tests/runtests.sh`, which needs external test images); `unit_tests/fs/` holds this layer's CppUnit tests (see "Unit tests" below; `unit_tests/base/` tests `tsk/base`, see `build-and-test.md`). Runnable usage samples are in `samples/`.
 
@@ -247,13 +248,15 @@ The returned `TSK_FS_ATTR` pointers belong to `file->meta` and die with the file
 
 The macro for the logical directory type is `TSK_FS_TYPE_ISDIR`, not `ISLOGICAL`. `TSK_FS_TYPE_UNSUPP` (`0xffffffff`) is what `tsk_fs_type_toid*` return for an unknown name. `tsk_fs_type_toid(const TSK_TCHAR *)` only looks at the first 15 characters.
 
-Type names accepted by `tsk_fs_type_toid_utf8` are in `fs_type_table` in `fs_types.c` (`ntfs`, `fat`, `ext`, `ufs`, `hfs`, `iso9660`, `yaffs2`, `apfs`, `logical`, `raw`, `swap`, plus specific subtypes such as `exfat`, `ext4`, `hfsp`; legacy names such as `linux-ext3` are in `fs_legacy_type_table`). `tsk_fs_type_toname` returns the first table entry with an equal code, so a `_DETECT` code maps to the group name (`TSK_FS_TYPE_FAT_DETECT` gives `"fat"`).
+`TSK_FS_TYPE_XFS` and `TSK_FS_TYPE_XFS_DETECT` (`0x00080000`, test with `TSK_FS_TYPE_ISXFS`) are the fork's, with upstream's later value; `0x00040000`, upstream's Btrfs value, is deliberately left unused.
+
+Type names accepted by `tsk_fs_type_toid_utf8` are in `fs_type_table` in `fs_types.c` (`ntfs`, `fat`, `ext`, `ufs`, `hfs`, `iso9660`, `yaffs2`, `apfs`, `xfs` (the fork's, described as "XFS (experimental)"), `logical`, `raw`, `swap`, plus specific subtypes such as `exfat`, `ext4`, `hfsp`; legacy names such as `linux-ext3` are in `fs_legacy_type_table`). `tsk_fs_type_toname` returns the first table entry with an equal code, so a `_DETECT` code maps to the group name (`TSK_FS_TYPE_FAT_DETECT` gives `"fat"`).
 
 ### Autodetection (`tsk_fs_open_img_decrypt` in `fs_open.c`)
 
 With `TSK_FS_TYPE_DETECT`, every opener in the `FS_OPENERS` table is tried, in this order, with the `test` argument set to 1:
 
-NTFS, FAT (FAT12/16/32 then exFAT), Ext2/3/4, UFS, YAFFS2, HFS (only if `TSK_USE_HFS`, default 1 in `tsk_fs_i.h`), ISO9660, APFS (through `apfs_open_auto_detect`, a wrapper that drops the `test` argument).
+NTFS, FAT (FAT12/16/32 then exFAT), Ext2/3/4, UFS, YAFFS2, HFS (only if `TSK_USE_HFS`, default 1 in `tsk_fs_i.h`), ISO9660, XFS (the fork's), APFS (through `apfs_open_auto_detect`, a wrapper that drops the `test` argument).
 
 Rules:
 
@@ -264,9 +267,9 @@ Rules:
 - If `img_info->itype == TSK_IMG_TYPE_LOGICAL`, only `TSK_FS_TYPE_DETECT` and `TSK_FS_TYPE_LOGICAL` are accepted, and `logical_fs_open` is used.
 - APFS is only detected when the image is a pool image; on any other image `apfs_open` fails with `TSK_ERR_FS_ARG` and autodetect moves on.
 
-With an explicit type, the `ISxxx` macros are tested in this order: NTFS, FAT, FFS, EXT, HFS, ISO9660, RAW, SWAP, YAFFS2, APFS. Anything else (including `TSK_FS_TYPE_LOGICAL` on a non-logical image) fails with `TSK_ERR_FS_UNSUPTYPE`.
+With an explicit type, the `ISxxx` macros are tested in this order: NTFS, FAT, FFS, EXT, HFS, ISO9660, RAW, SWAP, YAFFS2, APFS, XFS. Anything else (including `TSK_FS_TYPE_LOGICAL` on a non-logical image) fails with `TSK_ERR_FS_UNSUPTYPE`.
 
-The `test` argument tells an opener it is being probed. ISO9660 and YAFFS2 read it (it changes their error handling, detection mode or verbose output); HFS only passes it on when it reopens an embedded HFS+ volume; NTFS, FAT, Ext, UFS and APFS ignore it.
+The `test` argument tells an opener it is being probed. ISO9660 and YAFFS2 read it (it changes their error handling, detection mode or verbose output); HFS only passes it on when it reopens an embedded HFS+ volume; NTFS, FAT, Ext, UFS, APFS and XFS ignore it.
 
 ### Pools and APFS
 
@@ -408,6 +411,15 @@ FAT adds the virtual files `$MBR`, `$FAT1`, `$FAT2` (names in `tsk_fatfs.h`) so 
 
 **Logical directory** (`logical_fs.cpp`): presents a host directory as a file system. It exists only on images of type `TSK_IMG_TYPE_LOGICAL`. Metadata addresses encode a directory number in the high 32 bits and a file number in the low 32 bits (`tsk_logical_fs.h`; root is `LOGICAL_ROOT_INUM`, `0x100000000`). Content reads bypass the image layer through `logicalfs_read`.
 
+**XFS** (`xfs.cpp`, the fork's; read-only, v4 and v5, built up in the steps of #11):
+
+- `xfs_open` reads the primary superblock at byte 0 (always big-endian: `fs->endian` is `TSK_BIG_ENDIAN`, never guessed) and rejects a bad magic (`TSK_ERR_FS_MAGIC`) or an impossible geometry (`TSK_ERR_FS_CORRUPT`, "impossible XFS superblock: ..."): a version other than 4 or 5; block, sector or inode sizes that are not the power of two their log fields say, or out of range (blocks 512 B to 64 KiB, at least 1 KiB on v5; sectors 512 B to 32 KiB, at most a block; inodes 256 B to 2 KiB, at least 512 B on v5); `sb_inopblock`/`sb_inopblog` not matching; no AGs; AGs under 64 blocks, an `sb_agblklog` that is not the ceiling of log2(`sb_agblocks`), or AG-relative inode numbers over 32 bits; `sb_dblocks` outside the AGs (the last AG may be shorter, but not under 64 blocks); a directory block over 64 KiB; `sb_imax_pct` over 100; a root inode outside the AGs. These are the geometry checks of the kernel's `xfs_validate_sb_common`. Counters (`sb_icount`, `sb_ifree`, `sb_fdblocks`) and feature bits are not checked: a mounted file system's counters are stale on disk, and unknown features are shown by `fsstat`, not refused. The superblock CRC is not checked yet (#45). An image shorter than the file system is accepted, with `last_block_act` clipped.
+- **Block addresses are linear**: TSK block N is byte N × `block_size` of the file system, so AG `a`, AG block `b` is block `a × sb_agblocks + b`. XFS's own block numbers in on-disk structures (fsblocks) put the AG number above `sb_agblklog` bits instead, and must be converted (`xfs_fsb_to_daddr`); because `sb_agblklog` is rounded up, the two differ whenever `sb_agblocks` is not a power of two. `block_count` is `sb_dblocks`. The realtime device and an external log are not part of the image and are not read.
+- **Metadata addresses are XFS inode numbers**, unchanged: AG number, then AG block (`sb_agblklog` bits), then inode in block (`sb_inopblog` bits). Most addresses in the range are not inodes. `first_inum` is 0 (a constant floor: nothing guarantees the root is the lowest inode), `root_inum` is `sb_rootino`, and `last_inum` (`$OrphanFiles`) is one past the largest inode number the geometry allows in the last AG.
+- `fs_id` is `sb_uuid` (blkid's UUID), not `sb_meta_uuid`.
+- `fsstat` prints `Key: value` lines: type, label (`sb_fname`, up to 12 bytes, not NUL-terminated when full), UUID as a canonical UUID, `Version: 4|5`, each feature word by name (xfs_info's names; unknown bits as hex), inode range, root, inode size, sector, block and directory block sizes, AG count and size, the log's place and the realtime device. The validation setup's `check-tool fsstat` parses it (`test/vm/toolcheck/`).
+- Not implemented yet, each failing with `TSK_ERR_FS_UNSUPFUNC` ("XFS: ... is not supported yet"): inode lookup and `istat` (#39), file content (#39, #42), directories (#40, #41), the inode and block walks (#44), `fscheck`. `block_getflags` returns no flags. No journal functions.
+
 **Raw and swap**: one flat block range with no files. Most operations are `tsk_fs_nofs_*` stubs that fail with an "unsupported" error. `fscheck` is NULL.
 
 ## Adding or changing a file system implementation
@@ -445,7 +457,8 @@ The fs layer's CppUnit tests are one program, `test_fs`, run by `make check` (wh
 | File | Contents |
 | --- | --- |
 | `test_fs.cpp` | `main`: runs every fixture in the CppUnit registry |
-| `xfs_fixtures_test.cpp` | One test per XFS Fixture image (`v4`, `v4-512`, `v5-1k`, `v5-64k`, `v5`) |
+| `xfs_fixtures_test.cpp` | The XFS Fixture images (`v4`, `v4-512`, `v5-1k`, `v5-64k`, `v5`): detection and the type name `xfs`, the geometry in `TSK_FS_INFO`, `fsstat`'s superblock facts, the not-yet-implemented callbacks failing with TSK errors, and the walk |
+| `xfs_superblock_test.cpp` | Patched copies of the start of the `v5` image (`xfs-sb-*.img` in the build directory): impossible superblocks give a TSK error, a 12-byte label |
 | `manifest_check.h`, `manifest_check.cpp` | The Manifest-comparison helper, `fstest::check_walk` |
 | `manifest_check_test.cpp` | The helper's tests, on the ext4 image below |
 | `make-ext-image.sh` | Builds that ext4 image |
@@ -459,7 +472,7 @@ The fs layer's CppUnit tests are one program, `test_fs`, run by `make check` (wh
 
 **The helper.** `fstest::check_walk(image, expected, known_failures)` walks the file system in `image` (at offset 0, as in the Fixture images) with the harness (`tsk_img_open_utf8`, `tsk_fs_open_img` with `TSK_FS_TYPE_DETECT`, every allocated name from the root, SHA-256 of each regular file) and compares the walk with the expected Manifest (a `tskval::Manifest` or a file) under the Strict rules of the comparison step. It returns `passed`, the findings, and a `report` with one line per difference that names the encoded path, the field and both values ("Ground truth" is the expected Manifest), for example `/sub/hello.txt: size differs: Ground truth 7, run 6`. Assert with `CPPUNIT_ASSERT_MESSAGE(r.report, r.passed)`. `known_failures` tolerates expected differences, one per line as `<subject> <difference> [comment]` (a Known failure line without its check and partition columns): `/dirs/btree missing`, or `* error:fs-open` for a walk that fails as a whole. A line that no longer matches fails, so remove it when the gap is closed.
 
-**Adding tests.** Add a `*_test.cpp` file with a fixture registered by `CPPUNIT_TEST_SUITE_REGISTRATION` to `test_fs_SOURCES`; no other build change is needed. Until XFS support lands, each Fixture test expects the image to open as a raw image, autodetection to fail with a TSK error, and the walk to fail as a whole (`fs-open`); the XFS steps of #11 replace these expectations as they add support.
+**Adding tests.** Add a `*_test.cpp` file with a fixture registered by `CPPUNIT_TEST_SUITE_REGISTRATION` to `test_fs_SOURCES`; then regenerate `unit_tests/fs/Makefile.in` (`automake unit_tests/fs/Makefile && ./config.status unit_tests/fs/Makefile depfiles`, or `.devcontainer/build-compile-db.sh --fresh`: the build has no maintainer mode, so a changed `Makefile.am` is not picked up by `make`). The Fixture walk test expects the walk to fail as a whole at the root (`* error:root`) until inode lookup lands (#39); the XFS steps of #11 replace these expectations as they add support.
 
 ## Where the upstream Doxygen docs are wrong or silent
 
@@ -497,4 +510,4 @@ Each item was confirmed by reading the named symbol in this repository at releas
 22. **ext4 timestamps: unsigned seconds, epoch bits ignored** (`ext2fs.c`, `ext2fs_dinode_copy`): the 32-bit seconds are read with `tsk_getu32`, and for large inodes only `*_extra >> 2` (the nanoseconds) is used; the two epoch bits are dropped. By the ext4 on-disk format the 32-bit value is signed and the epoch bits extend it, so a time before 1970 comes back about 136 years late (−1500000000 reads as 2794967296), and a time after 2106 would wrap. Found by the harness self-test (`test/vm/harness/expected-differences.txt`).
 23. **ext4 slow symlinks with extents have no target** (`ext2fs.c`, `ext2fs_dinode_copy`): `meta->link` is filled from the inode for a fast symlink (under 60 bytes) and from the direct blocks only in the block-map branch. A slow symlink in an extent-mapped inode, the ext4 default, gets `meta->link == NULL`. Found by the harness self-test.
 24. **Phantom allocated names in large ext4 htree directories** (`ext2fs_dent.c`, `ext2fs_dent_parse_block`): an htree interior node block (`dx_node`) starts with a fake dirent with `name_len` 0. The parser rejects that entry as invalid before setting `dellen`, then scans the node's `(hash, block)` pairs 4 bytes at a time as if they were live dirents. Any 8 bytes that look like a dirent become a name flagged `TSK_FS_NAME_FLAG_ALLOC`, usually with a one-byte name and a free inode. Only directories with interior index nodes (tens of thousands of entries) are affected. Found by the Test corpus on the Validation VM (#32).
-25. **No XFS support yet** (`fs_open.c`, `FS_OPENERS`): 4.15 has no XFS opener, so autodetection of an XFS file system fails, with `TSK_ERR_FS_UNKTYPE` ("Cannot determine file system type") or, when the content looks random, `TSK_ERR_FS_POSSIBLY_ENCRYPTED` ("Possible encryption detected", the entropy fallback). Each XFS Fixture image gives `TSK_ERR_FS_UNKTYPE` (seen with the harness; the unit tests assert only that autodetection fails with a TSK error). The fork is adding read-only XFS support in #11; `unit_tests/fs/xfs_fixtures_test.cpp` asserts the current behaviour until then.
+25. **XFS support is partial** (`xfs.cpp`): the fork recognises XFS v4 and v5 and reads its superblock (#38), but inode lookup, `istat`, file content, directories, the inode and block walks and `fscheck` fail with `TSK_ERR_FS_UNSUPFUNC` until the later steps of #11 (#39 to #44); `block_getflags` returns no flags. So `fls`, `icat` and `istat` fail on XFS, and a walk fails at the root. Not supported and not planned in #11: the realtime device and an external log (only described by `fsstat`), and journal replay. Unknown feature bits are accepted and only printed by `fsstat`, so a future on-disk format change is not refused (#45 revisits this together with superblock CRC checks).

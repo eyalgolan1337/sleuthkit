@@ -15,10 +15,10 @@
 # sda5 /data-compat, sda6 /control, the Control file system).
 
 # check        partition  subject  difference     comment
-strict-guest   sda4       *        error:fs-open  /data is XFS: file system not recognised (no XFS support yet, #11)
-strict-guest   sda5       *        error:fs-open  /data-compat is XFS: file system not recognised (no XFS support yet, #11)
-strict-host    sda4       *        error:fs-open  /data is XFS: file system not recognised (no XFS support yet, #11)
-strict-host    sda5       *        error:fs-open  /data-compat is XFS: file system not recognised (no XFS support yet, #11)
+strict-guest   sda4       *        error:root     /data is XFS: inode lookup not implemented yet, so the root can't be read (#39)
+strict-guest   sda5       *        error:root     /data-compat is XFS: inode lookup not implemented yet, so the root can't be read (#39)
+strict-host    sda4       *        error:root     /data is XFS: inode lookup not implemented yet, so the root can't be read (#39)
+strict-host    sda5       *        error:root     /data-compat is XFS: inode lookup not implemented yet, so the root can't be read (#39)
 
 # The Test corpus on the Control file system (ext4): libtsk ext4 defects it
 # exposes (#19). The same on both sides.
@@ -46,22 +46,18 @@ strict-host    sda6       /corpus/links/max-symlink-1023               target  e
 strict-host    sda6       /corpus/dirs/btree/C                         extra   phantom name from an htree dx_node block parsed as dirents (#32)
 strict-host    sda6       /corpus/dirs/btree/g                         extra   phantom name from an htree dx_node block parsed as dirents (#32)
 strict-host    sda6       /corpus/dirs/btree/%E6                       extra   phantom name from an htree dx_node block parsed as dirents (#32)
-fls-guest      sda4       *        error:fs-open  /data is XFS: file system not recognised (no XFS support yet, #11)
-fls-guest      sda5       *        error:fs-open  /data-compat is XFS: file system not recognised (no XFS support yet, #11)
-fls-host       sda4       *        error:fs-open  /data is XFS: file system not recognised (no XFS support yet, #11)
-fls-host       sda5       *        error:fs-open  /data-compat is XFS: file system not recognised (no XFS support yet, #11)
-icat-guest     sda4       *        error:fs-open  /data is XFS: file system not recognised (no XFS support yet, #11)
-icat-guest     sda5       *        error:fs-open  /data-compat is XFS: file system not recognised (no XFS support yet, #11)
-icat-host      sda4       *        error:fs-open  /data is XFS: file system not recognised (no XFS support yet, #11)
-icat-host      sda5       *        error:fs-open  /data-compat is XFS: file system not recognised (no XFS support yet, #11)
-fsstat-guest   sda4       *        error:fs-open  /data is XFS: file system not recognised (no XFS support yet, #11)
-fsstat-guest   sda5       *        error:fs-open  /data-compat is XFS: file system not recognised (no XFS support yet, #11)
-fsstat-host    sda4       *        error:fs-open  /data is XFS: file system not recognised (no XFS support yet, #11)
-fsstat-host    sda5       *        error:fs-open  /data-compat is XFS: file system not recognised (no XFS support yet, #11)
-istat-guest    sda4       *        error:fs-open  /data is XFS: file system not recognised (no XFS support yet, #11)
-istat-guest    sda5       *        error:fs-open  /data-compat is XFS: file system not recognised (no XFS support yet, #11)
-istat-host     sda4       *        error:fs-open  /data is XFS: file system not recognised (no XFS support yet, #11)
-istat-host     sda5       *        error:fs-open  /data-compat is XFS: file system not recognised (no XFS support yet, #11)
+fls-guest      sda4       *        error:tool-failed  /data is XFS: directory listing not implemented yet (#40)
+fls-guest      sda5       *        error:tool-failed  /data-compat is XFS: directory listing not implemented yet (#40)
+fls-host       sda4       *        error:tool-failed  /data is XFS: directory listing not implemented yet (#40)
+fls-host       sda5       *        error:tool-failed  /data-compat is XFS: directory listing not implemented yet (#40)
+icat-guest     sda4       *        error:tool-failed  /data is XFS: inode lookup and file content not implemented yet (#39)
+icat-guest     sda5       *        error:tool-failed  /data-compat is XFS: inode lookup and file content not implemented yet (#39)
+icat-host      sda4       *        error:tool-failed  /data is XFS: inode lookup and file content not implemented yet (#39)
+icat-host      sda5       *        error:tool-failed  /data-compat is XFS: inode lookup and file content not implemented yet (#39)
+istat-guest    sda4       *        missing        /data is XFS: istat not implemented yet, so every spot check fails (#39)
+istat-guest    sda5       *        missing        /data-compat is XFS: istat not implemented yet, so every spot check fails (#39)
+istat-host     sda4       *        missing        /data is XFS: istat not implemented yet, so every spot check fails (#39)
+istat-host     sda5       *        missing        /data-compat is XFS: istat not implemented yet, so every spot check fails (#39)
 
 # The same phantom names in fls's listing (the CLI tool checks).
 fls-guest      sda6       /corpus/dirs/btree/C                          extra   phantom name from an htree dx_node block parsed as dirents (#32)
@@ -79,7 +75,7 @@ fls-host       sda6       /corpus/special/socket                        type    
 
 # Gate 4, Best-effort checks.
 # check            partition  subject  difference     comment
-best-effort-guest  sda2       *        error:fs-open  /boot is XFS: file system not recognised (no XFS support yet, #11)
-best-effort-guest  sda3       *        error:fs-open  / is XFS: file system not recognised (no XFS support yet, #11)
-best-effort-host   sda2       *        error:fs-open  /boot is XFS: file system not recognised (no XFS support yet, #11)
-best-effort-host   sda3       *        error:fs-open  / is XFS: file system not recognised (no XFS support yet, #11)
+best-effort-guest  sda2       *        error:root     /boot is XFS: inode lookup not implemented yet, so the root can't be read (#39)
+best-effort-guest  sda3       *        error:root     / is XFS: inode lookup not implemented yet, so the root can't be read (#39)
+best-effort-host   sda2       *        error:root     /boot is XFS: inode lookup not implemented yet, so the root can't be read (#39)
+best-effort-host   sda3       *        error:root     / is XFS: inode lookup not implemented yet, so the root can't be read (#39)

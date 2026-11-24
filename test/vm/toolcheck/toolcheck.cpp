@@ -495,6 +495,42 @@ tool_error(const ToolOutput &t, std::string &code, std::string &detail)
     detail = "exit status " + std::to_string(t.status) + ": " + msg;
 }
 
+// The run summary of XFS fsstat output (tsk/fs/xfs.cpp, xfs_fsstat): every
+// field has its own line, and the UUID is printed as a UUID.
+Summary
+fsstat_xfs(const std::vector<std::string> &lines)
+{
+    Summary s;
+    std::string label;
+    bool has_label = false;
+    for (const std::string &l : lines) {
+        // "Volume Name: " keeps an empty name; colon_value would trim it.
+        if (l.compare(0, 13, "Volume Name: ") == 0 && !has_label) {
+            label = l.substr(13);
+            has_label = true;
+        }
+    }
+    std::string uuid;
+    std::string version;
+    std::string inode_size;
+    std::string block_size;
+    std::string groups;
+    if (!has_label || !colon_value(lines, "Volume ID", uuid) ||
+        !colon_value(lines, "Version", version) ||
+        !colon_value(lines, "Inode Size", inode_size) ||
+        !colon_value(lines, "Block Size", block_size) ||
+        !colon_value(lines, "Allocation Group Count", groups)) {
+        set_summary_error(s, "tool-output",
+            "XFS fsstat output: no Volume Name, Volume ID, Version, Inode "
+            "Size, Block Size or Allocation Group Count line");
+        return s;
+    }
+    s.fields = {{"fs-type", "xfs"}, {"block-size", block_size},
+        {"inode-size", inode_size}, {"group-count", groups}, {"uuid", uuid},
+        {"label", label}, {"version", version}};
+    return s;
+}
+
 } // namespace
 
 void
@@ -937,6 +973,9 @@ fsstat_run(const ToolOutput &t, const Summary &expected)
         set_summary_error(
             s, "tool-output", "fsstat output: no File System Type");
         return s;
+    }
+    if (type == "XFS") {
+        return fsstat_xfs(lines);
     }
     if (type != "Ext2" && type != "Ext3" && type != "Ext4") {
         set_summary_error(s, "tool-output",
