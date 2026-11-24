@@ -194,7 +194,9 @@ The report shows at most 20 warnings per check, then a count of the rest. The ch
 ### Gate 5: format and lint
 
 - `clang-format`: `git clang-format --diff <merge-base>` on changed tracked files, and `clang-format --dry-run --Werror` on new untracked files. Any unformatted changed line fails the gate. To fix it, run `git clang-format develop` (or `clang-format -i <file>` for a new file).
-- `clang-tidy`: `clang-tidy-diff` with the repo's `.clang-tidy` on the changed lines. Any diagnostic on a changed line fails the gate. If the gate 1 build failed, this check fails without running: the compilation database is incomplete and a clean result would mean nothing.
+- `clang-tidy`: the repo's `.clang-tidy` on the changed lines. Any diagnostic on a changed line fails the gate. If the gate 1 build failed, this check fails without running: the compilation database is incomplete and a clean result would mean nothing.
+  - Changed sources go to `clang-tidy-diff`.
+  - Changed headers go to `test/vm/lib/tidy_headers.py` (#47). A header has no compile command, and many of this repo's headers don't compile on their own (`tsk/fs/tsk_fs.h` needs `tsk/base/tsk_base.h` first), so clang-tidy would stop at compiler errors on lines nobody changed. Instead, each changed header is linted through one compiled source that includes it, found in automake's dependency files as in [gate 1's C++17/C++20 check](#gate-1-c17-and-c20-syntax): a C++ source if there is one (so the header's `__cplusplus` parts are seen), preferably in the header's directory. `-line-filter` limits the diagnostics to the header's changed lines. The report notes which source each header was linted through. A changed header that no compiled source includes is a warning: its lines were not linted.
 
 ## Reading the report
 
