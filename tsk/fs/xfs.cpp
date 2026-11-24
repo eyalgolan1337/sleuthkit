@@ -1,5 +1,9 @@
 /*
- * The Sleuth Kit (fork): read-only XFS support.
+ * The Sleuth Kit
+ *
+ * This software is distributed under the Common Public License 1.0
+ *
+ * Read-only XFS support (the fork's, #11).
  *
  * The opener (superblock checks and the TSK_FS_INFO geometry), fsstat, and
  * the callbacks that later steps of #11 fill in. See docs/llm/fs.md ("XFS").
@@ -8,13 +12,13 @@
  * - A TSK block address is linear: AG number * sb_agblocks + AG block
  *   number, so block N starts at byte N * block_size of the file system.
  *   XFS's own block numbers (fsblocks) put the AG number above sb_agblklog
- *   bits instead; xfs_fsb_to_daddr converts.
+ *   bits instead; xfs_fsb_to_block converts.
  * - A TSK metadata address is the XFS inode number, unchanged: AG number,
  *   AG block number and inode-in-block number, in sb_agblklog + sb_inopblog
  *   low bits. Most numbers in the range are not inodes. last_inum is one past
  *   the largest inode number the geometry allows, for $OrphanFiles.
  *
- * C++14.
+ * C++14. Nothing here throws: no C++ exception can reach the C callers.
  */
 
 #include "tsk_xfs.h"
@@ -22,7 +26,8 @@
 #include <cinttypes>
 #include <cstdio>
 #include <cstring>
-#include <string>
+
+static_assert(sizeof(xfs_dsb) == 264, "xfs_dsb must match the disk layout");
 
 namespace {
 
@@ -69,81 +74,79 @@ ceil_log2(uint32_t n)
 }
 
 /*
- * Checks that the superblock describes a geometry XFS can have: the checks
- * of the kernel's xfs_validate_sb_common that concern geometry, plus a root
- * inode inside the file system. Mutable counters (icount, ifree, fdblocks)
- * and feature bits are not checked. Returns an empty string if the
- * superblock is good, or what is wrong with it.
+ * Checks that the superblock describes a geometry XFS can have: the geometry
+ * checks of the kernel's xfs_validate_sb_common, plus the consistency this
+ * module relies on to decode inode numbers (sb_inopblog, inodes no larger
+ * than a block, at most 32 AG-relative inode bits) and a root inode inside
+ * the file system. Mutable counters (icount, ifree, fdblocks) and feature
+ * bits are not checked. Returns true if the superblock is good; otherwise
+ * `buf` says what is wrong with it.
  */
-std::string
-check_superblock(const xfs_dsb &sb)
+bool
+check_superblock(const xfs_dsb &sb, char *buf, size_t len)
 {
     const SbValues v = sb_values(sb);
-    char buf[160];
     const unsigned version = v.versionnum & XFS_SB_VERSION_NUMBITS;
     if (version != XFS_SB_VERSION_4 && version != XFS_SB_VERSION_5) {
-        snprintf(buf, sizeof(buf), "unsupported version %u", version);
-        return buf;
+        snprintf(buf, len, "unsupported version %u", version);
+        return false;
     }
     if (sb.sb_sectlog < XFS_MIN_SECTORSIZE_LOG ||
         sb.sb_sectlog > XFS_MAX_SECTORSIZE_LOG ||
         v.sectsize != (1u << sb.sb_sectlog)) {
-        snprintf(buf, sizeof(buf), "sector size %u (log %u)",
-            (unsigned)v.sectsize, (unsigned)sb.sb_sectlog);
-        return buf;
+        snprintf(buf, len, "sector size %u (log %u)", (unsigned)v.sectsize,
+            (unsigned)sb.sb_sectlog);
+        return false;
     }
     if (sb.sb_blocklog < XFS_MIN_BLOCKSIZE_LOG ||
         sb.sb_blocklog > XFS_MAX_BLOCKSIZE_LOG ||
-        v.blocksize != (1u << sb.sb_blocklog) || v.blocksize < v.sectsize ||
+        v.blocksize != (1u << sb.sb_blocklog) ||
         (version == XFS_SB_VERSION_5 && v.blocksize < XFS_MIN_CRC_BLOCKSIZE)) {
-        snprintf(buf, sizeof(buf), "block size %" PRIu32 " (log %u)",
-            v.blocksize, (unsigned)sb.sb_blocklog);
-        return buf;
+        snprintf(buf, len, "block size %" PRIu32 " (log %u)", v.blocksize,
+            (unsigned)sb.sb_blocklog);
+        return false;
     }
     if (sb.sb_inodelog < XFS_DINODE_MIN_LOG ||
         sb.sb_inodelog > XFS_DINODE_MAX_LOG ||
         v.inodesize != (1u << sb.sb_inodelog) ||
-        sb.sb_inodelog > sb.sb_blocklog ||
-        (version == XFS_SB_VERSION_5 &&
-            v.inodesize < XFS_DINODE_MIN_CRC_SIZE)) {
-        snprintf(buf, sizeof(buf), "inode size %u (log %u)",
-            (unsigned)v.inodesize, (unsigned)sb.sb_inodelog);
-        return buf;
+        sb.sb_inodelog > sb.sb_blocklog) {
+        snprintf(buf, len, "inode size %u (log %u)", (unsigned)v.inodesize,
+            (unsigned)sb.sb_inodelog);
+        return false;
     }
     if (sb.sb_inopblog != sb.sb_blocklog - sb.sb_inodelog ||
         v.inopblock != (1u << sb.sb_inopblog)) {
-        snprintf(buf, sizeof(buf), "%u inodes per block (log %u)",
+        snprintf(buf, len, "%u inodes per block (log %u)",
             (unsigned)v.inopblock, (unsigned)sb.sb_inopblog);
-        return buf;
+        return false;
     }
     if (v.agcount == 0) {
-        return "no allocation groups";
+        snprintf(buf, len, "no allocation groups");
+        return false;
     }
     if (v.agblocks < XFS_MIN_AG_BLOCKS ||
         sb.sb_agblklog != ceil_log2(v.agblocks) ||
         sb.sb_agblklog + sb.sb_inopblog > XFS_MAX_AGINO_BITS) {
-        snprintf(buf, sizeof(buf),
-            "allocation group size %" PRIu32 " blocks (log %u)", v.agblocks,
-            (unsigned)sb.sb_agblklog);
-        return buf;
+        snprintf(buf, len, "allocation group size %" PRIu32 " blocks (log %u)",
+            v.agblocks, (unsigned)sb.sb_agblklog);
+        return false;
     }
     // The last AG may be shorter, but not shorter than the minimum.
     const uint64_t full = uint64_t{v.agcount} * v.agblocks;
     if (v.dblocks > full || v.dblocks < full - v.agblocks + XFS_MIN_AG_BLOCKS) {
-        snprintf(buf, sizeof(buf),
+        snprintf(buf, len,
             "%" PRIu64 " blocks in %" PRIu32 " allocation groups of %" PRIu32,
             v.dblocks, v.agcount, v.agblocks);
-        return buf;
+        return false;
     }
     if (sb.sb_dirblklog > XFS_MAX_BLOCKSIZE_LOG - sb.sb_blocklog) {
-        snprintf(buf, sizeof(buf), "directory block size log %u",
+        snprintf(buf, len, "directory block size log %u",
             (unsigned)(sb.sb_blocklog + sb.sb_dirblklog));
-        return buf;
+        return false;
     }
     if (sb.sb_imax_pct > 100) {
-        snprintf(
-            buf, sizeof(buf), "inode space %u%%", (unsigned)sb.sb_imax_pct);
-        return buf;
+        snprintf(buf, len, "inode space %u%%", (unsigned)sb.sb_imax_pct);
+        return false;
     }
     // The root inode's AG, and its block in that AG, must exist.
     const unsigned agino_bits = sb.sb_agblklog + sb.sb_inopblog;
@@ -152,15 +155,16 @@ check_superblock(const xfs_dsb &sb)
         (v.rootino & ((uint64_t{1} << agino_bits) - 1)) >> sb.sb_inopblog;
     if (v.rootino == 0 || root_ag >= v.agcount || root_agbno >= v.agblocks ||
         root_ag * v.agblocks + root_agbno >= v.dblocks) {
-        snprintf(buf, sizeof(buf), "root inode %" PRIu64, v.rootino);
-        return buf;
+        snprintf(buf, len, "root inode %" PRIu64, v.rootino);
+        return false;
     }
-    return "";
+    return true;
 }
 
-/* XFS fsblock (AG number above agblklog bits) to linear TSK block. */
+/* XFS fsblock (AG number above agblklog bits) to linear TSK block (not to
+ * 512-byte units, as the kernel's XFS_FSB_TO_DADDR). */
 TSK_DADDR_T
-xfs_fsb_to_daddr(const XFS_INFO *xfs, uint64_t fsb)
+xfs_fsb_to_block(const XFS_INFO *xfs, uint64_t fsb)
 {
     const uint64_t agno = fsb >> xfs->agblklog;
     const uint64_t agbno = fsb & ((uint64_t{1} << xfs->agblklog) - 1);
@@ -315,6 +319,15 @@ const FeatureName LOG_INCOMPAT[] = {
     {XFS_SB_FEAT_INCOMPAT_LOG_XATTRS, "xattrs"},
 };
 
+/* sb_features2, with the bits an old kernel wrote to sb_bad_features2
+ * instead (the kernel merges the two at mount, as xfs_info shows them). */
+uint32_t
+features2(const xfs_dsb &sb)
+{
+    return tsk_getu32(TSK_BIG_ENDIAN, sb.sb_features2) |
+        tsk_getu32(TSK_BIG_ENDIAN, sb.sb_bad_features2);
+}
+
 void
 print_uuid(FILE *h, const char *label, const uint8_t *u)
 {
@@ -325,7 +338,13 @@ print_uuid(FILE *h, const char *label, const uint8_t *u)
         u[10], u[11], u[12], u[13], u[14], u[15]);
 }
 
-#define XFS_COUNT(a) (sizeof(a) / sizeof((a)[0]))
+template <size_t N>
+void
+print_features(
+    FILE *h, const char *label, uint32_t flags, const FeatureName (&names)[N])
+{
+    print_features(h, label, flags, names, N);
+}
 
 uint8_t
 xfs_fsstat(TSK_FS_INFO *fs, FILE *h)
@@ -346,25 +365,21 @@ xfs_fsstat(TSK_FS_INFO *fs, FILE *h)
     print_uuid(h, "Volume ID", sb.sb_uuid);
     tsk_fprintf(h, "Version: %u\n", (unsigned)xfs->version);
     print_features(h, "Version Flags", v.versionnum & ~XFS_SB_VERSION_NUMBITS,
-        VERSION_BITS, XFS_COUNT(VERSION_BITS));
+        VERSION_BITS);
     if (v.versionnum & XFS_SB_VERSION_MOREBITSBIT) {
-        print_features(h, "Features 2",
-            tsk_getu32(TSK_BIG_ENDIAN, sb.sb_features2), FEATURES2,
-            XFS_COUNT(FEATURES2));
+        print_features(h, "Features 2", features2(sb), FEATURES2);
     }
     if (xfs->version == XFS_SB_VERSION_5) {
         print_features(h, "Compatible Features",
             tsk_getu32(TSK_BIG_ENDIAN, sb.sb_features_compat), nullptr, 0);
         print_features(h, "Read-Only Compatible Features",
-            tsk_getu32(TSK_BIG_ENDIAN, sb.sb_features_ro_compat), RO_COMPAT,
-            XFS_COUNT(RO_COMPAT));
+            tsk_getu32(TSK_BIG_ENDIAN, sb.sb_features_ro_compat), RO_COMPAT);
         const uint32_t incompat =
             tsk_getu32(TSK_BIG_ENDIAN, sb.sb_features_incompat);
-        print_features(h, "Incompatible Features", incompat, INCOMPAT,
-            XFS_COUNT(INCOMPAT));
+        print_features(h, "Incompatible Features", incompat, INCOMPAT);
         print_features(h, "Log Incompatible Features",
             tsk_getu32(TSK_BIG_ENDIAN, sb.sb_features_log_incompat),
-            LOG_INCOMPAT, XFS_COUNT(LOG_INCOMPAT));
+            LOG_INCOMPAT);
         if (incompat & XFS_SB_FEAT_INCOMPAT_META_UUID) {
             print_uuid(h, "Metadata UUID", sb.sb_meta_uuid);
         }
@@ -403,7 +418,7 @@ xfs_fsstat(TSK_FS_INFO *fs, FILE *h)
     const uint64_t logstart = tsk_getu64(TSK_BIG_ENDIAN, sb.sb_logstart);
     const uint32_t logblocks = tsk_getu32(TSK_BIG_ENDIAN, sb.sb_logblocks);
     if (logstart != 0) {
-        const TSK_DADDR_T first = xfs_fsb_to_daddr(xfs, logstart);
+        const TSK_DADDR_T first = xfs_fsb_to_block(xfs, logstart);
         tsk_fprintf(h,
             "Log: internal, blocks %" PRIuDADDR " - %" PRIuDADDR "\n", first,
             first + logblocks - 1);
@@ -492,15 +507,13 @@ xfs_open(TSK_IMG_INFO *img_info, TSK_OFF_T offset, TSK_FS_TYPE_ENUM ftype,
         xfs_close(fs);
         return NULL;
     }
-    const std::string bad = check_superblock(sb);
-    if (!bad.empty()) {
+    char bad[160];
+    if (!check_superblock(sb, bad, sizeof(bad))) {
         tsk_error_reset();
         tsk_error_set_errno(TSK_ERR_FS_CORRUPT);
-        tsk_error_set_errstr(
-            "xfs_open: impossible XFS superblock: %s", bad.c_str());
+        tsk_error_set_errstr("xfs_open: impossible XFS superblock: %s", bad);
         if (tsk_verbose) {
-            tsk_fprintf(
-                stderr, "xfs_open: impossible superblock: %s\n", bad.c_str());
+            tsk_fprintf(stderr, "xfs_open: impossible superblock: %s\n", bad);
         }
         xfs_close(fs);
         return NULL;
@@ -508,10 +521,8 @@ xfs_open(TSK_IMG_INFO *img_info, TSK_OFF_T offset, TSK_FS_TYPE_ENUM ftype,
 
     xfs->version = v.versionnum & XFS_SB_VERSION_NUMBITS;
     xfs->agblocks = v.agblocks;
-    xfs->agcount = v.agcount;
     xfs->agblklog = sb.sb_agblklog;
     xfs->inopblog = sb.sb_inopblog;
-    xfs->inode_size = v.inodesize;
 
     // Blocks: linear, see the top of this file.
     fs->block_size = v.blocksize;

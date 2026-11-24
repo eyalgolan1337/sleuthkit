@@ -900,10 +900,8 @@ extern "C" {
     * \ingroup fslib
     * Macro that takes a file system type and returns 1 if the type
     * is for an XFS file system. */
-    // clang-format off
-#define TSK_FS_TYPE_ISXFS(ftype) \
-    (((ftype) & TSK_FS_TYPE_XFS_DETECT)?1:0)
-    // clang-format on
+#define TSK_FS_TYPE_ISXFS(ftype)                                           \
+        (((ftype) & TSK_FS_TYPE_XFS_DETECT) ? 1 : 0)
 
     /**
     * \ingroup fslib

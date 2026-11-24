@@ -1,24 +1,29 @@
 /*
- * XFS superblocks that no XFS file system can have, and one with a label
- * that fills all 12 bytes, made by patching a copy of the start of the v5
- * Fixture image. Through the public API: an impossible superblock is a TSK
- * error, never a file system, and never a crash.
+ * XFS superblocks made by patching a copy of the start of the v5 Fixture
+ * image, read through the public API: superblocks no XFS file system can
+ * have give a TSK error (never a file system, never a crash), and unusual
+ * but possible ones open and show in fsstat.
  */
 #include "fs_test_data.h"
+#include "fs_test_util.h"
 
 #include <tsk/libtsk.h>
 
 #include <cppunit/extensions/HelperMacros.h>
 
-#include <cstdio>
 #include <fstream>
 #include <functional>
-#include <iterator>
-#include <sstream>
 #include <string>
 #include <vector>
 
 namespace {
+
+using fstest::error_text;
+using fstest::FsPtr;
+using fstest::fsstat_text;
+using fstest::fsstat_value;
+using fstest::ImgPtr;
+using fstest::open_image;
 
 using Bytes = std::vector<char>;
 
@@ -62,16 +67,22 @@ put64(Bytes &b, size_t off, uint64_t v)
 }
 
 // Superblock offsets used here.
-const size_t SB_MAGIC = 0, SB_BLOCKSIZE = 4, SB_DBLOCKS = 8, SB_ROOTINO = 56,
-             SB_AGBLOCKS = 84, SB_AGCOUNT = 88, SB_VERSIONNUM = 100,
-             SB_SECTSIZE = 102, SB_INODESIZE = 104, SB_INOPBLOCK = 106,
-             SB_FNAME = 108, SB_BLOCKLOG = 120, SB_SECTLOG = 121,
-             SB_INODELOG = 122, SB_INOPBLOG = 123, SB_AGBLKLOG = 124,
-             SB_IMAX_PCT = 127, SB_DIRBLKLOG = 192;
+const size_t SB_MAGIC = 0, SB_BLOCKSIZE = 4, SB_DBLOCKS = 8, SB_RBLOCKS = 16,
+             SB_LOGSTART = 48, SB_ROOTINO = 56, SB_AGBLOCKS = 84,
+             SB_AGCOUNT = 88, SB_VERSIONNUM = 100, SB_SECTSIZE = 102,
+             SB_INODESIZE = 104, SB_INOPBLOCK = 106, SB_FNAME = 108,
+             SB_BLOCKLOG = 120, SB_SECTLOG = 121, SB_INODELOG = 122,
+             SB_INOPBLOG = 123, SB_AGBLKLOG = 124, SB_IMAX_PCT = 127,
+             SB_DIRBLKLOG = 192, SB_FEATURES2 = 200, SB_BAD_FEATURES2 = 204,
+             SB_FEATURES_INCOMPAT = 216, SB_META_UUID = 248;
 
-// The v5 image: version number 0xb4a5, 4 KiB blocks, 512-byte sectors and
-// inodes, 4 AGs of 20480 blocks (agblklog 15), 81920 blocks, root 128.
+// The v5 image (xfs_info and xfs_db): version number 0xb4a5, 4 KiB blocks,
+// 512-byte sectors and inodes, 4 AGs of 20480 blocks (agblklog 15), 81920
+// blocks, root 128, features2 0x18a, incompat 0x2b (ftype, sparse, bigtime,
+// nrext64), a 16384-block internal log.
 const uint16_t V5_VERSIONNUM = 0xb4a5;
+const uint32_t V5_FEATURES2 = 0x18a;
+const uint32_t V5_INCOMPAT = 0x2b;
 
 std::string
 write_image(const std::string &name, const Bytes &b)
@@ -83,49 +94,26 @@ write_image(const std::string &name, const Bytes &b)
     return path;
 }
 
-std::string
-error_text()
-{
-    const char *msg = tsk_error_get();
-    return msg != nullptr ? msg : "";
-}
+// The result of opening an image's file system.
+struct Opened {
+    FsPtr fs;         // null if it didn't open
+    uint32_t err = 0; // the TSK error then
+    std::string text; // its text
+};
 
-// Opens `path` as an image and its file system with `type`. Returns whether
-// the file system opened (as XFS, if `ftype` is given); otherwise `errno_out`
-// and `text` are the TSK error.
-bool
-open_fs(const std::string &path, TSK_FS_TYPE_ENUM type, uint32_t &errno_out,
-    std::string &text, std::string *fsstat = nullptr)
+// Opens the raw image at `path` and its file system with `type`. Asserts
+// that whatever opened is XFS.
+Opened
+open_fs(const std::string &path, TSK_FS_TYPE_ENUM type, ImgPtr &img)
 {
-    const char *paths[] = {path.c_str()};
-    tsk_error_reset();
-    TSK_IMG_INFO *img = tsk_img_open_utf8(1, paths, TSK_IMG_TYPE_RAW, 0);
-    CPPUNIT_ASSERT_MESSAGE(
-        "image open failed: " + error_text(), img != nullptr);
-    TSK_FS_INFO *fs = tsk_fs_open_img(img, 0, type);
-    errno_out = tsk_error_get_errno();
-    text = error_text();
-    bool xfs = false;
-    if (fs != nullptr) {
-        xfs = fs->ftype == TSK_FS_TYPE_XFS;
-        if (fsstat != nullptr) {
-            FILE *f = tmpfile();
-            CPPUNIT_ASSERT(f != nullptr);
-            CPPUNIT_ASSERT_EQUAL(0, static_cast<int>(fs->fsstat(fs, f)));
-            CPPUNIT_ASSERT(fseek(f, 0, SEEK_SET) == 0);
-            char buf[4096];
-            size_t n = 0;
-            while ((n = fread(buf, 1, sizeof(buf), f)) > 0) {
-                fsstat->append(buf, n);
-            }
-            fclose(f);
-        }
-        tsk_fs_close(fs);
-    }
-    tsk_img_close(img);
-    CPPUNIT_ASSERT_MESSAGE(
-        "a file system other than XFS opened", fs == nullptr || xfs);
-    return fs != nullptr;
+    img = open_image(path, TSK_IMG_TYPE_RAW);
+    Opened o;
+    o.fs.reset(tsk_fs_open_img(img.get(), 0, type));
+    o.err = tsk_error_get_errno();
+    o.text = error_text();
+    CPPUNIT_ASSERT_MESSAGE("a file system other than XFS opened",
+        o.fs == nullptr || o.fs->ftype == TSK_FS_TYPE_XFS);
+    return o;
 }
 
 struct Damage {
@@ -139,20 +127,30 @@ class XfsSuperblockTest : public CppUnit::TestFixture {
     CPPUNIT_TEST(testImpossibleSuperblocks);
     CPPUNIT_TEST(testShorterThanASuperblock);
     CPPUNIT_TEST(testLabelOfTwelveBytes);
+    CPPUNIT_TEST(testInodesOf1KiB);
+    CPPUNIT_TEST(testUnusualSuperblockInFsstat);
+    CPPUNIT_TEST(testBadFeatures2Merged);
     CPPUNIT_TEST_SUITE_END();
 
   public:
     // The control for the damaged copies: unchanged, the same 64 KiB open as
-    // XFS, by type and by autodetection.
+    // XFS, by type and by autodetection, with the file system's blocks
+    // clipped to the 16 the image holds.
     void testUndamagedCopyOpens()
     {
         const std::string path = write_image("control", v5_start());
-        uint32_t err = 0;
-        std::string text;
-        CPPUNIT_ASSERT_MESSAGE(
-            "xfs: " + text, open_fs(path, TSK_FS_TYPE_XFS, err, text));
-        CPPUNIT_ASSERT_MESSAGE(
-            "detect: " + text, open_fs(path, TSK_FS_TYPE_DETECT, err, text));
+        ImgPtr img;
+        Opened o = open_fs(path, TSK_FS_TYPE_XFS, img);
+        CPPUNIT_ASSERT_MESSAGE("xfs: " + o.text, o.fs != nullptr);
+        CPPUNIT_ASSERT_EQUAL(
+            uint64_t{81919}, static_cast<uint64_t>(o.fs->last_block));
+        CPPUNIT_ASSERT_EQUAL(
+            uint64_t{15}, static_cast<uint64_t>(o.fs->last_block_act));
+        const std::string text = fsstat_text(o.fs.get());
+        CPPUNIT_ASSERT_EQUAL_MESSAGE(text, std::string("0 - 15"),
+            fsstat_value(text, "Total Range in Image"));
+        o = open_fs(path, TSK_FS_TYPE_DETECT, img);
+        CPPUNIT_ASSERT_MESSAGE("detect: " + o.text, o.fs != nullptr);
     }
 
     // One field per copy that makes the geometry impossible. Opening it as
@@ -194,12 +192,13 @@ class XfsSuperblockTest : public CppUnit::TestFixture {
                     put16(b, SB_INOPBLOCK, 32);
                     put8(b, SB_INOPBLOG, 5);
                 }},
-            {"v5-inode-size-256",
+            {"inode-larger-than-block",
                 [](Bytes &b) {
-                    put16(b, SB_INODESIZE, 256);
-                    put8(b, SB_INODELOG, 8);
-                    put16(b, SB_INOPBLOCK, 16);
-                    put8(b, SB_INOPBLOG, 4);
+                    // 1 KiB blocks of 2 KiB inodes.
+                    put32(b, SB_BLOCKSIZE, 1024);
+                    put8(b, SB_BLOCKLOG, 10);
+                    put16(b, SB_INODESIZE, 2048);
+                    put8(b, SB_INODELOG, 11);
                 }},
             {"inodes-per-block", [](Bytes &b) { put16(b, SB_INOPBLOCK, 9); }},
             {"inodes-per-block-log", [](Bytes &b) { put8(b, SB_INOPBLOG, 4); }},
@@ -211,6 +210,14 @@ class XfsSuperblockTest : public CppUnit::TestFixture {
                     put64(b, SB_DBLOCKS, 4 * 63);
                 }},
             {"ag-block-log", [](Bytes &b) { put8(b, SB_AGBLKLOG, 16); }},
+            {"ag-inode-bits-over-32",
+                [](Bytes &b) {
+                    // 2^30 + 1 blocks per AG: agblklog 31, plus inopblog 3.
+                    const uint32_t agblocks = (uint32_t{1} << 30) + 1;
+                    put32(b, SB_AGBLOCKS, agblocks);
+                    put8(b, SB_AGBLKLOG, 31);
+                    put64(b, SB_DBLOCKS, uint64_t{4} * agblocks);
+                }},
             {"blocks-beyond-ags",
                 [](Bytes &b) { put64(b, SB_DBLOCKS, 4 * 20480 + 1); }},
             {"last-ag-too-short",
@@ -235,18 +242,16 @@ class XfsSuperblockTest : public CppUnit::TestFixture {
             Bytes b = v5_start();
             d.apply(b);
             const std::string path = write_image(d.name, b);
-            uint32_t err = 0;
-            std::string text;
-            CPPUNIT_ASSERT_MESSAGE(std::string(d.name) + ": opened as xfs",
-                !open_fs(path, TSK_FS_TYPE_XFS, err, text));
+            const std::string name = d.name;
+            ImgPtr img;
+            Opened o = open_fs(path, TSK_FS_TYPE_XFS, img);
+            CPPUNIT_ASSERT_MESSAGE(name + ": opened as xfs", o.fs == nullptr);
             CPPUNIT_ASSERT_MESSAGE(
-                std::string(d.name) + ": no TSK error as xfs",
-                err != 0 && !text.empty());
-            CPPUNIT_ASSERT_MESSAGE(std::string(d.name) + ": autodetected",
-                !open_fs(path, TSK_FS_TYPE_DETECT, err, text));
+                name + ": no TSK error as xfs", o.err != 0 && !o.text.empty());
+            o = open_fs(path, TSK_FS_TYPE_DETECT, img);
+            CPPUNIT_ASSERT_MESSAGE(name + ": autodetected", o.fs == nullptr);
             CPPUNIT_ASSERT_MESSAGE(
-                std::string(d.name) + ": no TSK error from autodetection",
-                err != 0);
+                name + ": no TSK error from autodetection", o.err != 0);
         }
     }
 
@@ -256,10 +261,10 @@ class XfsSuperblockTest : public CppUnit::TestFixture {
         Bytes b = v5_start();
         b.resize(100);
         const std::string path = write_image("short", b);
-        uint32_t err = 0;
-        std::string text;
-        CPPUNIT_ASSERT(!open_fs(path, TSK_FS_TYPE_XFS, err, text));
-        CPPUNIT_ASSERT_MESSAGE("no TSK error", err != 0 && !text.empty());
+        ImgPtr img;
+        const Opened o = open_fs(path, TSK_FS_TYPE_XFS, img);
+        CPPUNIT_ASSERT(o.fs == nullptr);
+        CPPUNIT_ASSERT_MESSAGE("no TSK error", o.err != 0 && !o.text.empty());
     }
 
     // A label of 12 bytes has no terminating NUL in the superblock; fsstat
@@ -269,14 +274,83 @@ class XfsSuperblockTest : public CppUnit::TestFixture {
         Bytes b = v5_start();
         const std::string label = "abcdefghijkl";
         std::copy(label.begin(), label.end(), b.begin() + SB_FNAME);
-        const std::string path = write_image("label-12", b);
-        uint32_t err = 0;
-        std::string text;
-        std::string fsstat;
-        CPPUNIT_ASSERT_MESSAGE(
-            text, open_fs(path, TSK_FS_TYPE_XFS, err, text, &fsstat));
-        CPPUNIT_ASSERT_MESSAGE(fsstat,
-            fsstat.find("\nVolume Name: abcdefghijkl\n") != std::string::npos);
+        ImgPtr img;
+        const Opened o =
+            open_fs(write_image("label-12", b), TSK_FS_TYPE_XFS, img);
+        CPPUNIT_ASSERT_MESSAGE(o.text, o.fs != nullptr);
+        const std::string text = fsstat_text(o.fs.get());
+        CPPUNIT_ASSERT_EQUAL_MESSAGE(
+            text, label, fsstat_value(text, "Volume Name"));
+    }
+
+    // A non-default inode size (1 KiB, as on the Validation VM's
+    // /data-compat): fsstat shows it, and the inode numbers have 2 bits for
+    // the inode in a block, so the largest possible inode is AG 3, block
+    // 20479, inode 3: (3 << 17) | (20479 << 2) | 3 = 475135.
+    void testInodesOf1KiB()
+    {
+        Bytes b = v5_start();
+        put16(b, SB_INODESIZE, 1024);
+        put8(b, SB_INODELOG, 10);
+        put16(b, SB_INOPBLOCK, 4);
+        put8(b, SB_INOPBLOG, 2);
+        ImgPtr img;
+        const Opened o =
+            open_fs(write_image("inode-1k", b), TSK_FS_TYPE_DETECT, img);
+        CPPUNIT_ASSERT_MESSAGE(o.text, o.fs != nullptr);
+        const std::string text = fsstat_text(o.fs.get());
+        CPPUNIT_ASSERT_EQUAL_MESSAGE(
+            text, std::string("1024"), fsstat_value(text, "Inode Size"));
+        CPPUNIT_ASSERT_EQUAL_MESSAGE(
+            text, std::string("4"), fsstat_value(text, "Inodes per Block"));
+        CPPUNIT_ASSERT_EQUAL(
+            uint64_t{475136}, static_cast<uint64_t>(o.fs->last_inum));
+    }
+
+    // Features this module doesn't know, a separate metadata UUID, an
+    // external log and a realtime device are possible: the file system
+    // opens, and fsstat shows them.
+    void testUnusualSuperblockInFsstat()
+    {
+        Bytes b = v5_start();
+        put32(b, SB_FEATURES_INCOMPAT, V5_INCOMPAT | 0x4 | 0x80000000);
+        for (size_t i = 0; i < 16; ++i) {
+            put8(b, SB_META_UUID + i, 0x11);
+        }
+        put64(b, SB_LOGSTART, 0);
+        put64(b, SB_RBLOCKS, 1000);
+        ImgPtr img;
+        const Opened o =
+            open_fs(write_image("unusual", b), TSK_FS_TYPE_XFS, img);
+        CPPUNIT_ASSERT_MESSAGE(o.text, o.fs != nullptr);
+        const std::string text = fsstat_text(o.fs.get());
+        const auto expect = [&text](const char *key, const char *want) {
+            CPPUNIT_ASSERT_EQUAL_MESSAGE(
+                text, std::string(want), fsstat_value(text, key));
+        };
+        expect("Incompatible Features",
+            "ftype, sparse, meta-uuid, bigtime, nrext64, unknown 0x80000000");
+        expect("Metadata UUID", "11111111-1111-1111-1111-111111111111");
+        expect("Volume ID", "5f4b0c1e-0000-4000-8000-000000000005");
+        expect("Log", "external, 16384 blocks");
+        expect("Realtime Device", "1000 blocks (not read)");
+    }
+
+    // Old kernels wrote some features2 bits to sb_bad_features2; the
+    // kernel merges the two, and so does fsstat.
+    void testBadFeatures2Merged()
+    {
+        Bytes b = v5_start();
+        put32(b, SB_FEATURES2, V5_FEATURES2 & ~0x8u); // attr2 only in bad
+        put32(b, SB_BAD_FEATURES2, 0x8);
+        ImgPtr img;
+        const Opened o =
+            open_fs(write_image("bad-features2", b), TSK_FS_TYPE_XFS, img);
+        CPPUNIT_ASSERT_MESSAGE(o.text, o.fs != nullptr);
+        const std::string text = fsstat_text(o.fs.get());
+        CPPUNIT_ASSERT_EQUAL_MESSAGE(text,
+            std::string("lazy-count, attr2, projid32bit, crc"),
+            fsstat_value(text, "Features 2"));
     }
 };
 

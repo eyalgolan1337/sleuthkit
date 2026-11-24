@@ -6,6 +6,7 @@
  * tickets of #11 add the walk tests as they go.
  */
 #include "fs_test_data.h"
+#include "fs_test_util.h"
 #include "manifest_check.h"
 
 #include "manifest.h"
@@ -16,33 +17,16 @@
 
 #include <cstdio>
 #include <fstream>
-#include <memory>
-#include <sstream>
 #include <string>
 
 namespace {
 
-struct ImgCloser {
-    void operator()(TSK_IMG_INFO *img) const
-    {
-        tsk_img_close(img);
-    }
-};
-struct FsCloser {
-    void operator()(TSK_FS_INFO *fs) const
-    {
-        tsk_fs_close(fs);
-    }
-};
-using ImgPtr = std::unique_ptr<TSK_IMG_INFO, ImgCloser>;
-using FsPtr = std::unique_ptr<TSK_FS_INFO, FsCloser>;
-
-std::string
-error_text()
-{
-    const char *msg = tsk_error_get();
-    return msg != nullptr ? msg : "";
-}
+using fstest::error_text;
+using fstest::FsPtr;
+using fstest::fsstat_text;
+using fstest::fsstat_value;
+using fstest::ImgPtr;
+using fstest::open_image;
 
 // One Fixture image and what mkfs.xfs made of it: the mkfs.xfs options and
 // the xfs_info output in the comment at the top of its Manifest.
@@ -57,53 +41,29 @@ struct Fixture {
     unsigned ag_count;
     unsigned ag_blocks;
     unsigned dir_block_size; // naming bsize
+    // From xfs_db on the image, independently of libtsk: the largest inode
+    // number the geometry allows (convert agno <last> agbno <last block of
+    // the last AG> inoidx <inodes per block - 1> inode), and the internal
+    // log's first block as a linear block (convert fsb <sb logstart> daddr,
+    // in 512-byte units, divided by block size / 512) with its xfs_info
+    // log blocks.
+    uint64_t max_inode;
+    const char *log;
 };
 
 const Fixture V4 = {"v4", 1006, "5f4b0c1e-0000-4000-8000-000000000004", 4, 4096,
-    81920, 256, 4, 20480, 4096};
+    81920, 256, 4, 20480, 4096, 0x1cffff, "internal, blocks 40964 - 57347"};
 const Fixture V4_512 = {"v4-512", 1006, "5f4b0c1e-0000-4000-8000-000000000512",
-    4, 512, 655360, 256, 4, 163840, 4096};
+    4, 512, 655360, 256, 4, 163840, 4096, 0x1cffff,
+    "internal, blocks 327687 - 458758"};
 const Fixture V5_1K = {"v5-1k", 1181, "5f4b0c1e-0000-4000-8000-000000001024", 5,
-    1024, 327680, 512, 4, 81920, 4096};
+    1024, 327680, 512, 4, 81920, 4096, 0xe7fff,
+    "internal, blocks 163848 - 229383"};
 const Fixture V5_64K = {"v5-64k", 18821, "5f4b0c1e-0000-4000-8000-000000065536",
-    5, 65536, 8192, 512, 4, 2048, 65536};
+    5, 65536, 8192, 512, 4, 2048, 65536, 0xfffff,
+    "internal, blocks 4103 - 6086"};
 const Fixture V5 = {"v5", 1181, "5f4b0c1e-0000-4000-8000-000000000005", 5, 4096,
-    81920, 512, 4, 20480, 4096};
-
-// What the file system's fsstat callback prints (fs->fsstat, as the fsstat
-// tool calls it).
-std::string
-fsstat_text(TSK_FS_INFO *fs)
-{
-    FILE *f = tmpfile();
-    CPPUNIT_ASSERT_MESSAGE("tmpfile failed", f != nullptr);
-    const uint8_t rc = fs->fsstat(fs, f);
-    std::string text;
-    CPPUNIT_ASSERT_MESSAGE("fseek failed", fseek(f, 0, SEEK_SET) == 0);
-    char buf[4096];
-    size_t n = 0;
-    while ((n = fread(buf, 1, sizeof(buf), f)) > 0) {
-        text.append(buf, n);
-    }
-    fclose(f);
-    CPPUNIT_ASSERT_EQUAL_MESSAGE(
-        "fsstat failed: " + error_text(), 0, static_cast<int>(rc));
-    return text;
-}
-
-// The value of fsstat's "<key>: <value>" line, or "(no line)".
-std::string
-fsstat_value(const std::string &text, const std::string &key)
-{
-    std::istringstream in(text);
-    std::string line;
-    while (std::getline(in, line)) {
-        if (line.compare(0, key.size() + 2, key + ": ") == 0) {
-            return line.substr(key.size() + 2);
-        }
-    }
-    return "(no line)";
-}
+    81920, 512, 4, 20480, 4096, 0xe7fff, "internal, blocks 40967 - 57350"};
 
 // The volume ID as a canonical UUID ("" unless it has 16 bytes).
 std::string
@@ -128,18 +88,6 @@ std::string
 image_path(const Fixture &f)
 {
     return fstest::data_path(std::string("xfs/") + f.variant + ".img");
-}
-
-ImgPtr
-open_image(const std::string &path)
-{
-    const char *paths[] = {path.c_str()};
-    tsk_error_reset();
-    ImgPtr img(tsk_img_open_utf8(1, paths, TSK_IMG_TYPE_DETECT, 0));
-    CPPUNIT_ASSERT_MESSAGE(
-        "tsk_img_open_utf8 failed on " + path + ": " + error_text(),
-        img != nullptr);
-    return img;
 }
 
 tskval::Manifest
@@ -229,7 +177,7 @@ class XfsFixturesTest : public CppUnit::TestFixture {
 
     // The geometry in the public TSK_FS_INFO fields: blocks are the data
     // section's, the volume ID is the UUID, and the metadata address range
-    // ends with $OrphanFiles past every inode (the root is inside it).
+    // runs from 0 to $OrphanFiles, one past the largest possible inode.
     void testGeometry()
     {
         for (const Fixture &f : {V4, V4_512, V5_1K, V5_64K, V5}) {
@@ -252,9 +200,10 @@ class XfsFixturesTest : public CppUnit::TestFixture {
             CPPUNIT_ASSERT_MESSAGE(v + ": root inode outside the range",
                 fs->root_inum >= fs->first_inum &&
                     fs->root_inum < fs->last_inum);
-            CPPUNIT_ASSERT_EQUAL_MESSAGE(v + ": $OrphanFiles",
-                static_cast<uint64_t>(fs->last_inum),
-                static_cast<uint64_t>(TSK_FS_ORPHANDIR_INUM(fs)));
+            CPPUNIT_ASSERT_EQUAL_MESSAGE(v + ": first inode", uint64_t{0},
+                static_cast<uint64_t>(fs->first_inum));
+            CPPUNIT_ASSERT_EQUAL_MESSAGE(v + ": $OrphanFiles past every inode",
+                f.max_inode + 1, static_cast<uint64_t>(fs->last_inum));
         }
     }
 
@@ -288,6 +237,10 @@ class XfsFixturesTest : public CppUnit::TestFixture {
             expect("Sector Size", "512");
             expect("Root Directory", std::to_string(fs->root_inum));
             expect("Realtime Device", "none");
+            // The internal log's place, as linear blocks. It is in AG 2, and
+            // (except on v5-64k) blocks per AG are not a power of two, so a
+            // wrong fsblock conversion would show here.
+            expect("Log", f.log);
             if (f.version == 5) {
                 // xfs_info: finobt=1 rmapbt=1 reflink=1 inobtcount=1;
                 // ftype=1 sparse=1 bigtime=1 nrext64=1.
@@ -335,19 +288,19 @@ class XfsFixturesTest : public CppUnit::TestFixture {
 
             CPPUNIT_ASSERT_EQUAL_MESSAGE(v + ": directory walk", 1,
                 static_cast<int>(tsk_fs_dir_walk(fs.get(), fs->root_inum,
-                    TSK_FS_DIR_WALK_FLAG_RECURSE, count_name, nullptr)));
+                    TSK_FS_DIR_WALK_FLAG_RECURSE, ignore_name, nullptr)));
             failed("directory walk");
 
             CPPUNIT_ASSERT_EQUAL_MESSAGE(v + ": inode walk", 1,
                 static_cast<int>(
                     tsk_fs_meta_walk(fs.get(), fs->first_inum, fs->last_inum,
-                        TSK_FS_META_FLAG_ALLOC, count_meta, nullptr)));
+                        TSK_FS_META_FLAG_ALLOC, ignore_meta, nullptr)));
             failed("inode walk");
 
             CPPUNIT_ASSERT_EQUAL_MESSAGE(v + ": block walk", 1,
                 static_cast<int>(
                     tsk_fs_block_walk(fs.get(), fs->first_block, fs->last_block,
-                        TSK_FS_BLOCK_WALK_FLAG_ALLOC, count_block, nullptr)));
+                        TSK_FS_BLOCK_WALK_FLAG_ALLOC, ignore_block, nullptr)));
             failed("block walk");
 
             FILE *devnull = tmpfile();
@@ -381,15 +334,15 @@ class XfsFixturesTest : public CppUnit::TestFixture {
     }
 
   private:
-    static TSK_WALK_RET_ENUM count_name(TSK_FS_FILE *, const char *, void *)
+    static TSK_WALK_RET_ENUM ignore_name(TSK_FS_FILE *, const char *, void *)
     {
         return TSK_WALK_CONT;
     }
-    static TSK_WALK_RET_ENUM count_meta(TSK_FS_FILE *, void *)
+    static TSK_WALK_RET_ENUM ignore_meta(TSK_FS_FILE *, void *)
     {
         return TSK_WALK_CONT;
     }
-    static TSK_WALK_RET_ENUM count_block(const TSK_FS_BLOCK *, void *)
+    static TSK_WALK_RET_ENUM ignore_block(const TSK_FS_BLOCK *, void *)
     {
         return TSK_WALK_CONT;
     }

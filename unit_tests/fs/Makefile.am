@@ -17,7 +17,7 @@ TESTS = test_fs
 
 check_PROGRAMS = test_fs
 
-test_fs_SOURCES = test_fs.cpp fs_test_data.h \
+test_fs_SOURCES = test_fs.cpp fs_test_data.h fs_test_util.h \
     manifest_check.cpp manifest_check.h manifest_check_test.cpp \
     xfs_fixtures_test.cpp xfs_superblock_test.cpp \
     vm_harness.cpp vm_manifest.cpp vm_compare.cpp vm_sha256.cpp

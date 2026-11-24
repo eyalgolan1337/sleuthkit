@@ -1,5 +1,9 @@
 /*
- * The Sleuth Kit (fork): read-only XFS support, internal header.
+ * The Sleuth Kit
+ *
+ * This software is distributed under the Common Public License 1.0
+ *
+ * Read-only XFS support (the fork's, #11): internal header.
  *
  * On-disk structures of XFS v4 and v5 (big-endian, as in the kernel's
  * libxfs/xfs_format.h) and the XFS_INFO handle. Not installed; only the XFS
@@ -68,19 +72,18 @@ extern "C" {
 #define XFS_SB_FEAT_INCOMPAT_LOG_XATTRS 0x00000001
 
 /* Geometry limits (xfs_format.h, xfs_sb.c). */
-#define XFS_MIN_BLOCKSIZE_LOG 9     /* 512 bytes */
-#define XFS_MAX_BLOCKSIZE_LOG 16    /* 64 KiB */
-#define XFS_MIN_CRC_BLOCKSIZE 1024  /* v5 */
-#define XFS_MIN_SECTORSIZE_LOG 9    /* 512 bytes */
-#define XFS_MAX_SECTORSIZE_LOG 15   /* 32 KiB */
-#define XFS_DINODE_MIN_LOG 8        /* 256 bytes */
-#define XFS_DINODE_MAX_LOG 11       /* 2 KiB */
-#define XFS_DINODE_MIN_CRC_SIZE 512 /* v5 */
+#define XFS_MIN_BLOCKSIZE_LOG 9    /* 512 bytes */
+#define XFS_MAX_BLOCKSIZE_LOG 16   /* 64 KiB */
+#define XFS_MIN_CRC_BLOCKSIZE 1024 /* v5 */
+#define XFS_MIN_SECTORSIZE_LOG 9   /* 512 bytes */
+#define XFS_MAX_SECTORSIZE_LOG 15  /* 32 KiB */
+#define XFS_DINODE_MIN_LOG 8       /* 256 bytes */
+#define XFS_DINODE_MAX_LOG 11      /* 2 KiB */
 #define XFS_MIN_AG_BLOCKS 64
 #define XFS_MAX_AGINO_BITS 32 /* an AG-relative inode number is 32 bits */
 
 /* The superblock, at byte 0 of the file system (and of each AG). The
- * metadir fields at the end exist only with INCOMPAT_METADIR. */
+ * superblock goes on with metadir fields (INCOMPAT_METADIR), not read. */
 typedef struct {
     uint8_t sb_magicnum[4];
     uint8_t sb_blocksize[4];
@@ -138,12 +141,6 @@ typedef struct {
     uint8_t sb_pquotino[8];
     uint8_t sb_lsn[8];
     uint8_t sb_meta_uuid[16];
-    /* INCOMPAT_METADIR from here */
-    uint8_t sb_metadirino[8];
-    uint8_t sb_rgcount[4];
-    uint8_t sb_rgextents[4];
-    uint8_t sb_rgblklog;
-    uint8_t sb_pad[7];
 } xfs_dsb;
 
 /* The file system handle. */
@@ -154,10 +151,8 @@ typedef struct {
     /* Superblock values the module uses, in host order. */
     uint16_t version;  /* 4 or 5 */
     uint32_t agblocks; /* blocks per AG (the last AG may be shorter) */
-    uint32_t agcount;
-    uint8_t agblklog; /* bits of the AG block number in an fsblock */
-    uint8_t inopblog; /* bits of the inode-in-block number */
-    uint16_t inode_size;
+    uint8_t agblklog;  /* bits of the AG block number in an fsblock */
+    uint8_t inopblog;  /* bits of the inode-in-block number */
 } XFS_INFO;
 
 #ifdef __cplusplus
