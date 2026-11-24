@@ -17,7 +17,7 @@ Facts here were checked against the source at tag `sleuthkit-4.15.0`. Nothing wa
 | `tools/` | Command-line tools, one subdirectory per layer (`imgtools`, `vstools`, `fstools`, `pooltools`, `hashtools`, `srchtools`, `autotools`), plus `fiwalk/`, and the Perl scripts `sorter/` and `timeline/` (`mactime`). | Reference users of the API |
 | `samples/` | Four small API examples (`callback-style.cpp`, `posix-style.cpp` and their C++ variants), built as `noinst_PROGRAMS`. | Reference |
 | `tests/` | API test programs (`read_apis.cpp`, `fs_fname_apis.cpp`, `fs_attrlist_apis.cpp`, `fs_thread_test.cpp` with `tsk_thread.cpp`) and the scripts `runtests.sh`, `test_libraries.sh`, `wine_wrapper.sh`. | Tests |
-| `unit_tests/` | CppUnit tests. Only `unit_tests/base/` exists (`test_base.cpp`, `errors_test.cpp`, `errors_test.h`). | Tests |
+| `unit_tests/` | CppUnit tests: `unit_tests/base/` (`test_base.cpp`, `errors_test.cpp`, `errors_test.h`) and, in the fork, `unit_tests/fs/` (`test_fs`, see `fs.md`, "Unit tests"). | Tests |
 | `test/` | `test/tools/autotools/test_loaddb.sh`, which no `Makefile.am` references (orphan). `test/vm/`: the validation setup of #10. The validate command (`test/vm/validate.sh`, gates 1–5), the Validation VM's scripts (AlmaLinux 9.9 under VMware Workstation), the C++14 Manifest, comparison, harness, Ground truth capture, Test corpus and CLI tool check programs (built by `test/vm/manifest/manifest.mk`), and the XFS fixture images in `test/vm/fixtures/xfs/`; see `test/vm/README.md`. Not part of the autotools build. | Orphan; fork validation |
 | `m4/` | Autoconf macros: `tsk_opt_dep_check.m4` (optional-dependency logic), `cppunit.m4` (`AM_PATH_CPPUNIT`), `ax_pkg_check_modules.m4`, `ax_pthread.m4`, `ax_cxx_compile_stdcxx.m4`, Java macros, and the unused `ax_check_openssl.m4`. | Unix build |
 | `win32/` | Visual Studio solution `tsk-win.sln`, `libtsk/libtsk.vcxproj` (+ `.filters`, `packages.config`), one project directory per tool, `NugetPackages.props`, `updateAndBuildAll.py`, `BUILDING.txt`. | Windows build |
@@ -220,7 +220,7 @@ Installed headers whose declarations change with a `HAVE_*` macro. The library i
 
 There are two test suites, both run by `make check` through automake's parallel test harness (the default, since `AM_INIT_AUTOMAKE([foreign tar-ustar])` does not request `serial-tests`). There is no Catch2, no `test/catch_runner` and no CLI test runner in 4.15.
 
-`make check` at the top recurses through `SUBDIRS`. Only two directories define `TESTS`:
+`make check` at the top recurses through `SUBDIRS`. At 4.15.0 only two directories define `TESTS` (the fork adds a third, `unit_tests/fs/`, below):
 
 - **`tests/`** (`tests/Makefile.am`): builds `check_PROGRAMS = read_apis fs_fname_apis fs_attrlist_apis fs_thread_test` and runs `TESTS = runtests.sh test_libraries.sh`. The tests run with `tests/` in the build tree as the current directory.
   - `runtests.sh` runs `./fs_thread_test` on five images in `${HOME}/from_brian` (`ext2fs.dd`, `misc-ufs1.dd`, `test_hfs.dmg`, `ntfs-img-kw-1.dd`, `fat32.dd`) and diffs per-thread logs. If that directory is missing it exits 77 (skipped). Its own header says it is not used anywhere and that the images are not public.
@@ -230,6 +230,7 @@ There are two test suites, both run by `make check` through automake's parallel 
   - `test_base.cpp` holds `main`: it runs everything in `CppUnit::TestFactoryRegistry` through a `TextUi::TestRunner` with a `CompilerOutputter`, ignores `argv`, and returns 1 on any failure.
   - `errors_test.h`/`errors_test.cpp` define the fixture `ErrorsTest` (registered with `CPPUNIT_TEST_SUITE_REGISTRATION`) with `testInitialState`, `testLengthChecks` and, under `HAVE_PTHREAD` from `tsk_config.h`, `testMultithreaded`. They test `tsk_error_*` in `tsk/base/tsk_error.c`.
   - To add a test file: add it to `test_base_SOURCES` in `unit_tests/base/Makefile.am`. To add a layer directory: create `unit_tests/<layer>/Makefile.am` in the same shape, add it to `SUBDIRS` in `unit_tests/Makefile.am`, add `unit_tests/<layer>/Makefile` to `AC_CONFIG_FILES`, then rerun `./bootstrap` and `./configure`.
+- **`unit_tests/fs/`** (fork): CppUnit program `test_fs` for the fs layer, in the same shape as `unit_tests/base/` but with `AM_LDFLAGS = -static` (so it keeps configure's `LDFLAGS`) and `$(top_srcdir)` include paths. Before it runs, `make check` unpacks the XFS Fixture images from `test/vm/fixtures/xfs/` and builds a small ext4 image with e2fsprogs (`check_DATA`); details in `fs.md`, "Unit tests". It needs `xz`, `mkfs.ext4` and `debugfs`, all in the devcontainer. It compiles the harness and comparison step from `test/vm/` (through one-line `vm_*.cpp` wrappers, so no `subdir-objects` is needed) and takes its data from there, so it can't be built from a `make dist` tarball, which has no `test/vm/`. Without e2fsprogs or `xz`, `make check` fails at the data step rather than skipping.
 
 How cppunit is detected (`configure.ac`, `m4/cppunit.m4`):
 
@@ -246,6 +247,8 @@ make -C tests check TESTS=test_libraries.sh      # one test script
 make -C tests check TESTS=                       # build tests/ programs only
 make -C unit_tests/base check                    # cppunit tests (only if CPPUNIT is on)
 ./unit_tests/base/test_base                      # run them directly
+make -C unit_tests/fs check                      # fs layer cppunit tests (makes their data first)
+./unit_tests/fs/test_fs                          # run them directly (after the data exists)
 (cd tests && ./read_apis /path/to/image/dir)     # run an API test program by hand
 (cd tests && ./fs_thread_test -f ntfs img.dd 4 2) # args: [-f fstype] [-o imgoffset] [-v] image nthreads niters
 grep CPPUNIT_TRUE config.status                  # "#" means unit_tests/ is not built
