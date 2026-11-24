@@ -38,20 +38,48 @@ gate5_format() {
     item_note "checked $((${#tracked[@]} + ${#untracked[@]})) changed C/C++ file(s)"
 }
 
+# A header has no compile command and may not compile on its own, so changed
+# headers are linted through a source that includes them (tidy_headers.py);
+# changed sources go to clang-tidy-diff.
+GATE5_HEADER_ERE='\.(h|hh|hpp|hxx|inc)$'
+
+# Appends the -U0 diff of each named file against MERGE_BASE (tracked) or
+# /dev/null (untracked) to the file $1.
+gate5_diff() {
+    local out=$1 kind=$2 f
+    shift 2
+    if [[ $kind == tracked ]]; then
+        (($#)) || return 0
+        git diff -U0 --no-color --no-ext-diff --src-prefix=a/ --dst-prefix=b/ \
+            "$MERGE_BASE" -- "$@" >>"$out"
+        return 0
+    fi
+    for f in "$@"; do
+        git diff -U0 --no-color --no-ext-diff --src-prefix=a/ --dst-prefix=b/ \
+            --no-index /dev/null "$f" >>"$out"
+    done
+    return 0
+}
+
 gate5_tidy() {
-    local tracked=() untracked=() f diff="$RUN_DIR/.report/tidy.diff"
+    local tracked=() untracked=() f
+    local diff="$RUN_DIR/.report/tidy.diff" hdiff="$RUN_DIR/.report/tidy-headers.diff"
+    local src_t=() src_u=() hdr_t=() hdr_u=()
     mapfile -d '' -t tracked < <(changes_filter "$C_CXX_ERE" CHANGED_TRACKED)
     mapfile -d '' -t untracked < <(changes_filter "$C_CXX_ERE" CHANGED_UNTRACKED)
-    : >"$diff"
-    if ((${#tracked[@]})); then
-        git diff -U0 --no-color --no-ext-diff --src-prefix=a/ --dst-prefix=b/ \
-            "$MERGE_BASE" -- "${tracked[@]}" >>"$diff"
-    fi
-    for f in "${untracked[@]}"; do
-        git diff -U0 --no-color --no-ext-diff --src-prefix=a/ --dst-prefix=b/ \
-            --no-index /dev/null "$f" >>"$diff"
+    for f in "${tracked[@]}"; do
+        if [[ $f =~ $GATE5_HEADER_ERE ]]; then hdr_t+=("$f"); else src_t+=("$f"); fi
     done
-    if [[ ! -s $diff ]]; then
+    for f in "${untracked[@]}"; do
+        if [[ $f =~ $GATE5_HEADER_ERE ]]; then hdr_u+=("$f"); else src_u+=("$f"); fi
+    done
+    : >"$diff"
+    : >"$hdiff"
+    gate5_diff "$diff" tracked "${src_t[@]}"
+    gate5_diff "$diff" untracked "${src_u[@]}"
+    gate5_diff "$hdiff" tracked "${hdr_t[@]}"
+    gate5_diff "$hdiff" untracked "${hdr_u[@]}"
+    if [[ ! -s $diff && ! -s $hdiff ]]; then
         item_note "no changed C/C++ lines"
         return 0
     fi
@@ -61,19 +89,29 @@ gate5_tidy() {
         item_fail "not run: the gate 1 build failed, so compile_commands.json is incomplete"
         return 1
     }
-    local rc=0 out
-    out=$(clang-tidy-diff -p1 -path "$REPO" -j "$JOBS" -quiet <"$diff" 2>&1) || rc=$?
-    printf '%s\n' "$out"
-    local n=0 path rest
+    local rc=0 hrc=0 out="" hout=""
+    if [[ -s $diff ]]; then
+        out=$(clang-tidy-diff -p1 -path "$REPO" -j "$JOBS" -quiet <"$diff" 2>&1) || rc=$?
+        printf '%s\n' "$out"
+    fi
+    if [[ -s $hdiff ]]; then
+        hout=$(python3 "$VALIDATE_LIB/tidy_headers.py" --repo "$REPO" \
+            --items "$VALIDATE_ITEMS" --diff "$hdiff" 2>&1) || hrc=$?
+        printf '%s\n' "$hout"
+    fi
+    local n=0 path rest line
     while IFS= read -r line; do
         [[ $line =~ ^([^:]+):([0-9]+):([0-9]+):\ (warning|error):\ (.*)$ ]] || continue
         path=${BASH_REMATCH[1]#"$REPO"/}
         rest="${BASH_REMATCH[4]}: ${BASH_REMATCH[5]}"
         item_fail "clang-tidy: $path:${BASH_REMATCH[2]}: $rest"
         n=$((n + 1))
-    done <<<"$out"
+    done <<<"$out"$'\n'"$hout"
     if ((rc != 0 && n == 0)); then
         item_fail "clang-tidy-diff failed (exit $rc); see the log"
+    fi
+    if ((hrc != 0 && n == 0)); then
+        item_fail "clang-tidy on changed headers failed (exit $hrc); see the log"
     fi
     item_note "clang-tidy reported $n diagnostic(s) on changed lines"
     return 0
