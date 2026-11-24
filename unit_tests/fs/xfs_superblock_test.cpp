@@ -73,13 +73,15 @@ const size_t SB_MAGIC = 0, SB_BLOCKSIZE = 4, SB_DBLOCKS = 8, SB_RBLOCKS = 16,
              SB_INODESIZE = 104, SB_INOPBLOCK = 106, SB_FNAME = 108,
              SB_BLOCKLOG = 120, SB_SECTLOG = 121, SB_INODELOG = 122,
              SB_INOPBLOG = 123, SB_AGBLKLOG = 124, SB_IMAX_PCT = 127,
-             SB_DIRBLKLOG = 192, SB_FEATURES_INCOMPAT = 216, SB_META_UUID = 248;
+             SB_DIRBLKLOG = 192, SB_FEATURES2 = 200, SB_BAD_FEATURES2 = 204,
+             SB_FEATURES_INCOMPAT = 216, SB_META_UUID = 248;
 
 // The v5 image (xfs_info and xfs_db): version number 0xb4a5, 4 KiB blocks,
 // 512-byte sectors and inodes, 4 AGs of 20480 blocks (agblklog 15), 81920
-// blocks, root 128, incompat 0x2b (ftype, sparse, bigtime,
+// blocks, root 128, features2 0x18a, incompat 0x2b (ftype, sparse, bigtime,
 // nrext64), a 16384-block internal log.
 const uint16_t V5_VERSIONNUM = 0xb4a5;
+const uint32_t V5_FEATURES2 = 0x18a;
 const uint32_t V5_INCOMPAT = 0x2b;
 
 std::string
@@ -127,6 +129,7 @@ class XfsSuperblockTest : public CppUnit::TestFixture {
     CPPUNIT_TEST(testLabelOfTwelveBytes);
     CPPUNIT_TEST(testInodesOf1KiB);
     CPPUNIT_TEST(testUnusualSuperblockInFsstat);
+    CPPUNIT_TEST(testBadFeatures2Merged);
     CPPUNIT_TEST_SUITE_END();
 
   public:
@@ -337,6 +340,33 @@ class XfsSuperblockTest : public CppUnit::TestFixture {
         expect(
             "InCompat Features", "ftype, sparse, meta-uuid, bigtime, nrext64");
         expect("Volume ID", "5f4b0c1e-0000-4000-8000-000000000005");
+    }
+
+    // Old kernels wrote some features2 bits to sb_bad_features2; the
+    // kernel merges the two, and so does fsstat's Flags line. Without
+    // MOREBITS, features2 is not read at all.
+    void testBadFeatures2Merged()
+    {
+        Bytes b = v5_start();
+        put32(b, SB_FEATURES2, V5_FEATURES2 & ~0x8u); // attr2 only in bad
+        put32(b, SB_BAD_FEATURES2, 0x8);
+        ImgPtr img;
+        Opened o =
+            open_fs(write_image("bad-features2", b), TSK_FS_TYPE_XFS, img);
+        CPPUNIT_ASSERT_MESSAGE(o.text, o.fs != nullptr);
+        std::string text = fsstat_text(o.fs.get());
+        CPPUNIT_ASSERT_EQUAL_MESSAGE(text,
+            std::string("nlink, align, logv2, extflg, dirv2, morebits, "
+                        "lazy-count, attr2, projid32bit, crc"),
+            fsstat_value(text, "Flags"));
+
+        put16(b, SB_VERSIONNUM, V5_VERSIONNUM & ~0x8000u); // no MOREBITS
+        o = open_fs(write_image("no-morebits", b), TSK_FS_TYPE_XFS, img);
+        CPPUNIT_ASSERT_MESSAGE(o.text, o.fs != nullptr);
+        text = fsstat_text(o.fs.get());
+        CPPUNIT_ASSERT_EQUAL_MESSAGE(text,
+            std::string("nlink, align, logv2, extflg, dirv2"),
+            fsstat_value(text, "Flags"));
     }
 };
 

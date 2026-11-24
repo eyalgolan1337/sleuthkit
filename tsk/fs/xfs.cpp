@@ -224,6 +224,30 @@ struct FeatureName {
     const char *name;
 };
 
+const FeatureName VERSION_BITS[] = {
+    {XFS_SB_VERSION_ATTRBIT, "attr"},
+    {XFS_SB_VERSION_NLINKBIT, "nlink"},
+    {XFS_SB_VERSION_QUOTABIT, "quota"},
+    {XFS_SB_VERSION_ALIGNBIT, "align"},
+    {XFS_SB_VERSION_DALIGNBIT, "dalign"},
+    {XFS_SB_VERSION_SHAREDBIT, "shared"},
+    {XFS_SB_VERSION_LOGV2BIT, "logv2"},
+    {XFS_SB_VERSION_SECTORBIT, "sector"},
+    {XFS_SB_VERSION_EXTFLGBIT, "extflg"},
+    {XFS_SB_VERSION_DIRV2BIT, "dirv2"},
+    {XFS_SB_VERSION_BORGBIT, "ascii-ci"},
+    {XFS_SB_VERSION_MOREBITSBIT, "morebits"},
+};
+
+const FeatureName FEATURES2[] = {
+    {XFS_SB_VERSION2_LAZYSBCOUNTBIT, "lazy-count"},
+    {XFS_SB_VERSION2_ATTR2BIT, "attr2"},
+    {XFS_SB_VERSION2_PARENTBIT, "parent"},
+    {XFS_SB_VERSION2_PROJID32BIT, "projid32bit"},
+    {XFS_SB_VERSION2_CRCBIT, "crc"},
+    {XFS_SB_VERSION2_FTYPE, "ftype"},
+};
+
 const FeatureName RO_COMPAT[] = {
     {XFS_SB_FEAT_RO_COMPAT_FINOBT, "finobt"},
     {XFS_SB_FEAT_RO_COMPAT_RMAPBT, "rmapbt"},
@@ -243,25 +267,76 @@ const FeatureName INCOMPAT[] = {
     {XFS_SB_FEAT_INCOMPAT_METADIR, "metadir"},
 };
 
-/* Prints `label` and the names (xfs_info's) of the known bits of `flags`,
- * as the earlier module did: only if a bit is set. Unknown bits are not
- * printed. */
+/* The bits of `flags` that `names` knows. */
+template <size_t N>
+uint32_t
+known_bits(uint32_t flags, const FeatureName (&names)[N])
+{
+    uint32_t known = 0;
+    for (const FeatureName &f : names) {
+        known |= f.bit;
+    }
+    return flags & known;
+}
+
+/* Prints the names (xfs_info's) of the known bits of `flags`, each after
+ * `sep`, which is ", " after the first name. Unknown bits are not printed. */
 template <size_t N>
 void
-print_features(
-    FILE *h, const char *label, uint32_t flags, const FeatureName (&names)[N])
+print_names(
+    FILE *h, uint32_t flags, const FeatureName (&names)[N], const char *&sep)
 {
-    if (flags == 0) {
-        return;
-    }
-    tsk_fprintf(h, "%s", label);
-    const char *sep = "";
     for (const FeatureName &f : names) {
         if (flags & f.bit) {
             tsk_fprintf(h, "%s%s", sep, f.name);
             sep = ", ";
         }
     }
+}
+
+/* Prints `label` and the names of the known bits of `flags`, as the earlier
+ * module did: only if there is one. */
+template <size_t N>
+void
+print_features(
+    FILE *h, const char *label, uint32_t flags, const FeatureName (&names)[N])
+{
+    if (known_bits(flags, names) == 0) {
+        return;
+    }
+    tsk_fprintf(h, "%s", label);
+    const char *sep = "";
+    print_names(h, flags, names, sep);
+    tsk_fprintf(h, "\n");
+}
+
+/* sb_features2, with the bits an old kernel wrote to sb_bad_features2
+ * instead (the kernel merges the two at mount, as xfs_info shows them). */
+uint32_t
+features2(const xfs_dsb &sb)
+{
+    return tsk_getu32(TSK_BIG_ENDIAN, sb.sb_features2) |
+        tsk_getu32(TSK_BIG_ENDIAN, sb.sb_bad_features2);
+}
+
+/* The feature flags of sb_versionnum and, if its MOREBITS flag is set,
+ * sb_features2, on one line under the label UFS's fsstat uses for its
+ * superblock flags. They are all the features a v4 superblock has. */
+void
+print_flags(FILE *h, const xfs_dsb &sb)
+{
+    const uint32_t version_bits =
+        tsk_getu16(TSK_BIG_ENDIAN, sb.sb_versionnum) & ~XFS_SB_VERSION_NUMBITS;
+    const uint32_t more =
+        (version_bits & XFS_SB_VERSION_MOREBITSBIT) ? features2(sb) : 0;
+    if (known_bits(version_bits, VERSION_BITS) == 0 &&
+        known_bits(more, FEATURES2) == 0) {
+        return;
+    }
+    tsk_fprintf(h, "Flags: ");
+    const char *sep = "";
+    print_names(h, version_bits, VERSION_BITS, sep);
+    print_names(h, more, FEATURES2, sep);
     tsk_fprintf(h, "\n");
 }
 
@@ -288,6 +363,7 @@ xfs_fsstat(TSK_FS_INFO *fs, FILE *h)
         u[0], u[1], u[2], u[3], u[4], u[5], u[6], u[7], u[8], u[9], u[10],
         u[11], u[12], u[13], u[14], u[15]);
     tsk_fprintf(h, "Version: %u\n", (unsigned)xfs->version);
+    print_flags(h, sb);
     if (xfs->version == XFS_SB_VERSION_5) {
         // No compat features are defined, so there is no compat line.
         print_features(h, "InCompat Features: ",

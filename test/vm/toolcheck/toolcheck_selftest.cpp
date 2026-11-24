@@ -782,6 +782,8 @@ const char FSSTAT_XFS[] =
     "Volume Name : \n"
     "Volume ID: 58b65ad6-8935-4dc6-91b5-006c193f477d\n"
     "Version: 5\n"
+    "Flags: nlink, align, logv2, extflg, dirv2, morebits, lazy-count, attr2, "
+    "projid32bit, crc\n"
     "InCompat Features: ftype, sparse, bigtime, nrext64\n"
     "Read Only Compat Features : finobt, rmapbt, reflink, inobtcount\n"
     "\n"

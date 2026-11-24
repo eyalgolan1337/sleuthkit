@@ -232,6 +232,12 @@ class XfsFixturesTest : public CppUnit::TestFixture {
             expect("Sector Size", "512");
             expect("Root Inode", std::to_string(fs->root_inum));
             expect("Inode max persentage", "25");
+            // xfs_db version: the sb_versionnum flags, then sb_features2
+            // (v4 0x28a, v5 0x18a).
+            const std::string flags =
+                "nlink, align, logv2, extflg, dirv2, morebits, lazy-count, "
+                "attr2, projid32bit, ";
+            expect("Flags", flags + (f.version == 5 ? "crc" : "ftype"));
             if (f.version == 5) {
                 // xfs_info: finobt=1 rmapbt=1 reflink=1 inobtcount=1;
                 // ftype=1 sparse=1 bigtime=1 nrext64=1.
