@@ -445,19 +445,64 @@ append_run(TSK_FS_ATTR_RUN *&head, TSK_FS_ATTR_RUN *&tail, TSK_DADDR_T offset,
     return true;
 }
 
+/* A data fork that is not what its format says. */
+uint8_t
+fork_corrupt()
+{
+    tsk_error_reset();
+    tsk_error_set_errno(TSK_ERR_FS_INODE_COR);
+    return 1;
+}
+
+/* An extent record, decoded (see xfs_bmbt_rec). */
+struct Extent {
+    bool unwritten;
+    uint64_t startoff; /* file offset in blocks */
+    uint64_t fsblock;
+    uint64_t count; /* blocks */
+};
+
+Extent
+decode_extent(const xfs_bmbt_rec &rec)
+{
+    const uint64_t l0 = tsk_getu64(TSK_BIG_ENDIAN, rec.l0);
+    const uint64_t l1 = tsk_getu64(TSK_BIG_ENDIAN, rec.l1);
+    Extent e;
+    e.unwritten = (l0 >> 63) != 0;
+    e.startoff = (l0 & ((uint64_t{1} << 63) - 1)) >> 9;
+    e.fsblock = ((l0 & 0x1ff) << 43) | (l1 >> 21);
+    e.count = l1 & ((uint64_t{1} << 21) - 1);
+    return e;
+}
+
+/* The TSK block address of the first of the `count` blocks at `fsblock`;
+ * false if they are not all inside one AG. */
+bool
+fsblock_addr(
+    const XFS_INFO *xfs, uint64_t fsblock, uint64_t count, TSK_DADDR_T &addr)
+{
+    const uint64_t agno = fsblock >> xfs->agblklog;
+    const uint64_t agbno = fsblock & ((uint64_t{1} << xfs->agblklog) - 1);
+    if (agno >= xfs->agcount ||
+        agbno + count > ag_length(xfs, (uint32_t)agno)) {
+        return false;
+    }
+    addr = ag_block(xfs, (uint32_t)agno, (uint32_t)agbno);
+    return true;
+}
+
 /*
- * The run list of a data fork of `d.nextents` extent records, covering the
- * file's blocks from 0: a sparse run for each gap between extents (holes)
- * and for each unwritten extent (preallocated, reads as zeros), and one for
- * a hole at the end up to `size`. `end_blocks` is where the runs end, which
- * can be past the end of the file (preallocated blocks, a directory's
- * blocks above its size). Errors (TSK_ERR_FS_INODE_COR): more records than
- * the fork holds, an empty, overlapping or out-of-order extent, an extent
- * outside its AG.
+ * The run list of the `count` extent records at `recs`, covering the file's
+ * blocks from 0: a sparse run for each gap between extents (holes) and for
+ * each unwritten extent (preallocated, reads as zeros), and one for a hole
+ * at the end up to `size`. `end_blocks` is where the runs end, which can be
+ * past the end of the file (preallocated blocks, a directory's blocks above
+ * its size). Errors (TSK_ERR_FS_INODE_COR): an empty, overlapping or
+ * out-of-order extent, an extent outside its AG.
  */
 uint8_t
-extent_runs(const XFS_INFO *xfs, const DinodeView &d, TSK_OFF_T size,
-    TSK_FS_ATTR_RUN *&head, TSK_DADDR_T &end_blocks)
+extent_runs(const XFS_INFO *xfs, const xfs_bmbt_rec *recs, uint64_t count,
+    TSK_OFF_T size, TSK_FS_ATTR_RUN *&head, TSK_DADDR_T &end_blocks)
 {
     const TSK_FS_INFO *fs = &xfs->fs_info;
     head = NULL;
@@ -465,48 +510,32 @@ extent_runs(const XFS_INFO *xfs, const DinodeView &d, TSK_OFF_T size,
     const auto corrupt = [&head]() {
         tsk_fs_attr_run_free(head);
         head = NULL;
-        tsk_error_reset();
-        tsk_error_set_errno(TSK_ERR_FS_INODE_COR);
-        return 1;
+        return fork_corrupt();
     };
     const auto no_memory = [&head]() {
         tsk_fs_attr_run_free(head);
         head = NULL;
         return 1;
     };
-    if (d.nextents > d.fork_size / sizeof(xfs_bmbt_rec)) {
-        return corrupt();
-    }
     // Blocks beyond this would overflow a byte offset.
     const uint64_t max_blocks = INT64_MAX / fs->block_size;
-    const xfs_bmbt_rec *recs = reinterpret_cast<const xfs_bmbt_rec *>(d.fork);
     uint64_t cursor = 0; // file block where the runs end so far
-    for (uint64_t i = 0; i < d.nextents; ++i) {
-        const uint64_t l0 = tsk_getu64(TSK_BIG_ENDIAN, recs[i].l0);
-        const uint64_t l1 = tsk_getu64(TSK_BIG_ENDIAN, recs[i].l1);
-        const bool unwritten = (l0 >> 63) != 0;
-        const uint64_t startoff = (l0 & ((uint64_t{1} << 63) - 1)) >> 9;
-        const uint64_t fsblock = ((l0 & 0x1ff) << 43) | (l1 >> 21);
-        const uint64_t count = l1 & ((uint64_t{1} << 21) - 1);
-        if (count == 0 || startoff < cursor || startoff + count > max_blocks) {
+    for (uint64_t i = 0; i < count; ++i) {
+        const Extent e = decode_extent(recs[i]);
+        TSK_DADDR_T addr = 0;
+        if (e.count == 0 || e.startoff < cursor ||
+            e.startoff + e.count > max_blocks ||
+            !fsblock_addr(xfs, e.fsblock, e.count, addr)) {
             return corrupt();
         }
-        const uint64_t agno = fsblock >> xfs->agblklog;
-        const uint64_t agbno = fsblock & ((uint64_t{1} << xfs->agblklog) - 1);
-        if (agno >= xfs->agcount ||
-            agbno + count > ag_length(xfs, (uint32_t)agno)) {
-            return corrupt();
-        }
-        if (startoff > cursor &&
-            !append_run(head, tail, cursor, 0, startoff - cursor, true)) {
+        if (e.startoff > cursor &&
+            !append_run(head, tail, cursor, 0, e.startoff - cursor, true)) {
             return no_memory();
         }
-        if (!append_run(head, tail, startoff,
-                ag_block(xfs, (uint32_t)agno, (uint32_t)agbno), count,
-                unwritten)) {
+        if (!append_run(head, tail, e.startoff, addr, e.count, e.unwritten)) {
             return no_memory();
         }
-        cursor = startoff + count;
+        cursor = e.startoff + e.count;
     }
     const uint64_t file_blocks =
         ((uint64_t)size + fs->block_size - 1) / fs->block_size;
@@ -520,14 +549,127 @@ extent_runs(const XFS_INFO *xfs, const DinodeView &d, TSK_OFF_T size,
     return 0;
 }
 
+/* The extent B+tree of a data fork being read into `recs`. */
+struct BmbtWalk {
+    XFS_INFO *xfs;
+    uint64_t nextents;              /* the records the inode says it has */
+    uint64_t cursor;                /* file block where `recs` end so far */
+    std::vector<xfs_bmbt_rec> recs; /* in file order */
+};
+
+/*
+ * Appends the extent records of the subtree at B+tree block `fsblock`, which
+ * must be at `level`, in file order. Each step down goes down one level,
+ * every block has records and every record starts at or after the end of
+ * the one before, so a tree that loops back on itself is an error, not an
+ * endless walk. Errors: a short read (TSK_ERR_FS_READ); a block outside the
+ * AGs, of another magic or level, with no records or too many, or records
+ * out of order or more than the inode has (TSK_ERR_FS_INODE_COR).
+ */
+uint8_t
+bmbt_subtree(BmbtWalk &walk, uint64_t fsblock, unsigned level)
+{
+    XFS_INFO *xfs = walk.xfs;
+    TSK_FS_INFO *fs = &xfs->fs_info;
+    TSK_DADDR_T addr = 0;
+    if (!fsblock_addr(xfs, fsblock, 1, addr)) {
+        return fork_corrupt();
+    }
+    std::vector<char> buf(fs->block_size);
+    const ssize_t cnt = tsk_fs_read_block(fs, addr, buf.data(), buf.size());
+    if (cnt != (ssize_t)buf.size()) {
+        if (cnt >= 0) {
+            tsk_error_reset();
+            tsk_error_set_errno(TSK_ERR_FS_READ);
+        }
+        return 1;
+    }
+    const bool crc = xfs->version == XFS_SB_VERSION_5;
+    const size_t hdr = crc ? XFS_BTREE_LBLOCK_CRC_LEN : XFS_BTREE_LBLOCK_LEN;
+    const uint8_t *b = reinterpret_cast<const uint8_t *>(buf.data());
+    // The long-form header starts like the short-form one.
+    const xfs_btree_sblock *h = reinterpret_cast<const xfs_btree_sblock *>(b);
+    const size_t numrecs = tsk_getu16(TSK_BIG_ENDIAN, h->bb_numrecs);
+    const size_t maxrecs = (buf.size() - hdr) / sizeof(xfs_bmbt_rec);
+    if (tsk_getu32(TSK_BIG_ENDIAN, h->bb_magic) !=
+            (crc ? XFS_BMAP_CRC_MAGIC : XFS_BMAP_MAGIC) ||
+        tsk_getu16(TSK_BIG_ENDIAN, h->bb_level) != level || numrecs == 0 ||
+        numrecs > maxrecs) {
+        return fork_corrupt();
+    }
+    if (level > 0) {
+        const uint8_t *ptrs = b + hdr + maxrecs * XFS_BMBT_KEY_SIZE;
+        for (size_t i = 0; i < numrecs; ++i) {
+            if (bmbt_subtree(walk,
+                    tsk_getu64(TSK_BIG_ENDIAN, ptrs + i * XFS_BMBT_PTR_SIZE),
+                    level - 1)) {
+                return 1;
+            }
+        }
+        return 0;
+    }
+    if (numrecs > walk.nextents - walk.recs.size()) {
+        return fork_corrupt();
+    }
+    const xfs_bmbt_rec *recs = reinterpret_cast<const xfs_bmbt_rec *>(b + hdr);
+    for (size_t i = 0; i < numrecs; ++i) {
+        const Extent e = decode_extent(recs[i]);
+        if (e.count == 0 || e.startoff < walk.cursor) {
+            return fork_corrupt();
+        }
+        walk.cursor = e.startoff + e.count;
+        walk.recs.push_back(recs[i]);
+    }
+    return 0;
+}
+
+/*
+ * Reads the extent records of the B+tree rooted in data fork `d` into
+ * `recs`, in file order. Errors: those of bmbt_subtree; a root that doesn't
+ * fit the fork, with no records or of an impossible level, or a tree with
+ * fewer records than the inode says (TSK_ERR_FS_INODE_COR).
+ */
+uint8_t
+bmbt_records(
+    XFS_INFO *xfs, const DinodeView &d, std::vector<xfs_bmbt_rec> &recs)
+{
+    if (d.fork_size < XFS_BMDR_HDR_LEN) {
+        return fork_corrupt();
+    }
+    const unsigned level = tsk_getu16(TSK_BIG_ENDIAN, d.fork);
+    const size_t numrecs = tsk_getu16(TSK_BIG_ENDIAN, d.fork + 2);
+    const size_t maxrecs = (d.fork_size - XFS_BMDR_HDR_LEN) /
+        (XFS_BMBT_KEY_SIZE + XFS_BMBT_PTR_SIZE);
+    if (level == 0 || level > XFS_BTREE_MAXLEVELS || numrecs == 0 ||
+        numrecs > maxrecs) {
+        return fork_corrupt();
+    }
+    BmbtWalk walk{xfs, d.nextents, 0, {}};
+    const uint8_t *ptrs =
+        d.fork + XFS_BMDR_HDR_LEN + maxrecs * XFS_BMBT_KEY_SIZE;
+    for (size_t i = 0; i < numrecs; ++i) {
+        if (bmbt_subtree(walk,
+                tsk_getu64(TSK_BIG_ENDIAN, ptrs + i * XFS_BMBT_PTR_SIZE),
+                level - 1)) {
+            return 1;
+        }
+    }
+    if (walk.recs.size() != d.nextents) {
+        return fork_corrupt();
+    }
+    recs.swap(walk.recs);
+    return 0;
+}
+
 } // namespace
 
 /*
  * load_attrs: the default (data) attribute from the data fork of the raw
  * inode in meta->content_ptr. Extent lists are non-resident runs; local
  * data (short-form directories, inline symlinks) is resident; device files
- * have no data. Extent B+trees are not read yet (#42), and the extents of a
- * file on the realtime device are not in the image: TSK_ERR_FS_UNSUPFUNC.
+ * have no data. A directory's extent B+tree is read into runs like an extent
+ * list. A file's is not read yet (#42), and the extents of a file on the
+ * realtime device are not in the image: TSK_ERR_FS_UNSUPFUNC.
  * Extended attributes (the attr fork) are not read.
  */
 uint8_t
@@ -539,7 +681,7 @@ xfs_load_attrs(TSK_FS_FILE *fs_file)
         return 1;
     }
     TSK_FS_META *meta = fs_file->meta;
-    const XFS_INFO *xfs = reinterpret_cast<const XFS_INFO *>(fs_file->fs_info);
+    XFS_INFO *xfs = reinterpret_cast<XFS_INFO *>(fs_file->fs_info);
     if (meta->attr != NULL && meta->attr_state == TSK_FS_META_ATTR_STUDIED) {
         return 0;
     }
@@ -558,6 +700,7 @@ xfs_load_attrs(TSK_FS_FILE *fs_file)
 
     TSK_FS_ATTR_RUN *runs = NULL;
     TSK_DADDR_T end_blocks = 0;
+    std::vector<xfs_bmbt_rec> tree_recs;
     switch (d.format) {
     case XFS_DINODE_FMT_DEV:
         break;
@@ -574,12 +717,28 @@ xfs_load_attrs(TSK_FS_FILE *fs_file)
             set_unsupported();
             return 1;
         }
-        if (extent_runs(xfs, d, meta->size, runs, end_blocks)) {
+        if (d.nextents > d.fork_size / sizeof(xfs_bmbt_rec)) {
+            return fork_corrupt();
+        }
+        if (extent_runs(xfs, reinterpret_cast<const xfs_bmbt_rec *>(d.fork),
+                d.nextents, meta->size, runs, end_blocks)) {
+            return 1;
+        }
+        break;
+    case XFS_DINODE_FMT_BTREE:
+        if (meta->type != TSK_FS_META_TYPE_DIR) {
+            // File content through an extent B+tree comes in #42.
+            set_unsupported();
+            return 1;
+        }
+        if (bmbt_records(xfs, d, tree_recs) ||
+            extent_runs(xfs, tree_recs.data(), tree_recs.size(), meta->size,
+                runs, end_blocks)) {
             return 1;
         }
         break;
     default:
-        // XFS_DINODE_FMT_BTREE (#42), and formats data forks don't have.
+        // Formats data forks don't have.
         set_unsupported();
         return 1;
     }

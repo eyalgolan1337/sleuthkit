@@ -224,6 +224,22 @@ typedef struct {
     uint8_t l1[8];
 } xfs_bmbt_rec;
 
+/* An extent B+tree (data fork format XFS_DINODE_FMT_BTREE). Its root is in
+ * the fork: the level and the number of records (2 bytes each), then keys
+ * (file offsets in blocks, 8 bytes each) and, after room for the most keys
+ * the fork holds, pointers (fsblocks, 8 bytes each). The other blocks start
+ * with a long-form B+tree block header (24 bytes, 72 on v5 with the CRC
+ * fields): the magic, the level, the number of records and the siblings.
+ * Nodes go on with keys and pointers laid out as in the root, leaves (level
+ * 0) with extent records. */
+#define XFS_BMAP_MAGIC 0x424d4150     /* "BMAP" */
+#define XFS_BMAP_CRC_MAGIC 0x424d4133 /* "BMA3" */
+#define XFS_BMDR_HDR_LEN 4
+#define XFS_BTREE_LBLOCK_LEN 24
+#define XFS_BTREE_LBLOCK_CRC_LEN 72
+#define XFS_BMBT_KEY_SIZE 8
+#define XFS_BMBT_PTR_SIZE 8
+
 /* --- Inode allocation (xfs_format.h) --- */
 
 /* The AGI, the AG's inode header, in its third sector. Only its start, the
@@ -294,8 +310,14 @@ typedef struct {
 #define XFS_INO64_SIZE 8
 #define XFS_MAXINUMBER ((1ULL << 56) - 1)
 
+/* A directory that is not short-form is a file of directory blocks: the
+ * data blocks, which hold the names, are below this byte offset; the index
+ * (leaf and node blocks) starts at it, and the free-space index at twice
+ * it. */
+#define XFS_DIR2_LEAF_OFFSET (32ULL << 30)
+
 /* Directory block magics: a block directory's single block, and a data
- * block of a leaf or node directory. */
+ * block of a leaf, node or B+tree directory. */
 #define XFS_DIR2_BLOCK_MAGIC 0x58443242 /* "XD2B" */
 #define XFS_DIR3_BLOCK_MAGIC 0x58444233 /* "XDB3" */
 #define XFS_DIR2_DATA_MAGIC 0x58443244  /* "XD2D" */

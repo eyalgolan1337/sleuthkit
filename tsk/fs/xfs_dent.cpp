@@ -5,8 +5,8 @@
  *
  * Read-only XFS support (the fork's, #11): directories.
  *
- * dir_open_meta: the names of short-form and block directories. See
- * docs/llm/fs.md ("XFS").
+ * dir_open_meta: the names of a directory of any format (short-form, block,
+ * leaf, node, B+tree). See docs/llm/fs.md ("XFS").
  *
  * C++14. Nothing here throws: no C++ exception can reach the C callers.
  */
@@ -136,36 +136,36 @@ parse_shortform(const XFS_INFO *xfs, TSK_FS_DIR *fs_dir, TSK_FS_NAME *fs_name,
 }
 
 /*
- * The entries of a block directory's block, `buf` (one directory block), in
- * the order stored, "." and ".." included. Unused regions are skipped. A
- * data block of a leaf or node directory (#41) is TSK_ERR_FS_UNSUPFUNC. A
- * block whose magic, leaf count, unused region or entry doesn't fit, or an
- * empty name, is TSK_COR (TSK_ERR_FS_CORRUPT).
+ * The entries of directory block `buf` (one directory block), in the order
+ * stored, "." and ".." included: a data block, or, if `single` (the
+ * directory has one block), a block directory's block, whose entries end at
+ * its leaf entries. Unused regions are skipped. A block whose magic, leaf
+ * count, unused region or entry doesn't fit, or an empty name, is TSK_COR
+ * (TSK_ERR_FS_CORRUPT).
  */
 TSK_RETVAL_ENUM
 parse_block(const XFS_INFO *xfs, TSK_FS_DIR *fs_dir, TSK_FS_NAME *fs_name,
-    const uint8_t *buf)
+    const uint8_t *buf, bool single)
 {
     const bool v5 = xfs->version == XFS_SB_VERSION_5;
     const uint32_t magic = tsk_getu32(TSK_BIG_ENDIAN, buf);
-    if (magic == (v5 ? XFS_DIR3_DATA_MAGIC : XFS_DIR2_DATA_MAGIC)) {
-        set_unsupported();
-        return TSK_ERR;
-    }
-    if (magic != (v5 ? XFS_DIR3_BLOCK_MAGIC : XFS_DIR2_BLOCK_MAGIC)) {
-        return dir_corrupt();
-    }
-    // The data area runs from the header to the leaf entries before the
-    // tail at the end of the block.
     const size_t hdr = v5 ? XFS_DIR3_DATA_HDR_SIZE : XFS_DIR2_DATA_HDR_SIZE;
-    const size_t tail_off = xfs->dirblksize - sizeof(xfs_dir2_block_tail);
-    const xfs_dir2_block_tail *tail =
-        reinterpret_cast<const xfs_dir2_block_tail *>(buf + tail_off);
-    const uint32_t leaves = tsk_getu32(TSK_BIG_ENDIAN, tail->count);
-    if (leaves > (tail_off - hdr) / XFS_DIR2_LEAF_ENTRY_SIZE) {
+    size_t end = xfs->dirblksize;
+    if (single && magic == (v5 ? XFS_DIR3_BLOCK_MAGIC : XFS_DIR2_BLOCK_MAGIC)) {
+        // The data area runs from the header to the leaf entries before
+        // the tail at the end of the block.
+        const size_t tail_off = xfs->dirblksize - sizeof(xfs_dir2_block_tail);
+        const xfs_dir2_block_tail *tail =
+            reinterpret_cast<const xfs_dir2_block_tail *>(buf + tail_off);
+        const uint32_t leaves = tsk_getu32(TSK_BIG_ENDIAN, tail->count);
+        if (leaves > (tail_off - hdr) / XFS_DIR2_LEAF_ENTRY_SIZE) {
+            return dir_corrupt();
+        }
+        end = tail_off - size_t{leaves} * XFS_DIR2_LEAF_ENTRY_SIZE;
+    }
+    else if (magic != (v5 ? XFS_DIR3_DATA_MAGIC : XFS_DIR2_DATA_MAGIC)) {
         return dir_corrupt();
     }
-    const size_t end = tail_off - size_t{leaves} * XFS_DIR2_LEAF_ENTRY_SIZE;
     const size_t ftype_size = xfs->has_ftype ? 1 : 0;
     size_t pos = hdr;
     while (pos < end) {
@@ -199,12 +199,78 @@ parse_block(const XFS_INFO *xfs, TSK_FS_DIR *fs_dir, TSK_FS_NAME *fs_name,
     return TSK_OK;
 }
 
+/*
+ * The entries of a directory of directory blocks (block, leaf, node or
+ * B+tree), from its data blocks: the directory blocks below the directory's
+ * size (which covers the data blocks only) that its extent map has, in file
+ * order. A data block that was freed leaves a hole, which is skipped. The
+ * index and free-space blocks are past the size and are never read. A size
+ * that is not a number of directory blocks, or that reaches the index, is
+ * TSK_COR (TSK_ERR_FS_CORRUPT); a block that can't be read, or an extent map
+ * that can't be, is TSK_ERR.
+ */
+TSK_RETVAL_ENUM
+read_blocks(const XFS_INFO *xfs, TSK_FS_DIR *fs_dir, TSK_FS_NAME *fs_name)
+{
+    TSK_FS_FILE *fs_file = fs_dir->fs_file;
+    const TSK_OFF_T size = fs_file->meta->size;
+    const uint32_t dirblksize = xfs->dirblksize;
+    if (size <= 0 || size % dirblksize != 0 ||
+        (uint64_t)size > XFS_DIR2_LEAF_OFFSET) {
+        return dir_corrupt();
+    }
+    const TSK_FS_ATTR *attr = tsk_fs_file_attr_get(fs_file);
+    if (attr == NULL) {
+        return TSK_ERR;
+    }
+    if ((attr->flags & TSK_FS_ATTR_NONRES) == 0) {
+        return dir_corrupt();
+    }
+    const bool single = size == (TSK_OFF_T)dirblksize;
+    const uint32_t block_size = xfs->fs_info.block_size;
+    // Directory blocks are at multiples of their size, in file blocks.
+    const uint64_t db_blocks = dirblksize / block_size;
+    const uint64_t end = (uint64_t)size / block_size;
+    std::vector<char> buf(dirblksize);
+    for (const TSK_FS_ATTR_RUN *run = attr->nrd.run; run != NULL;
+        run = run->next) {
+        if (run->offset >= end) {
+            break;
+        }
+        if (run->flags & TSK_FS_ATTR_RUN_FLAG_SPARSE) {
+            continue;
+        }
+        // The directory blocks that start in this run.
+        const uint64_t run_end =
+            run->offset + run->len < end ? run->offset + run->len : end;
+        for (uint64_t at =
+                 (run->offset + db_blocks - 1) / db_blocks * db_blocks;
+            at < run_end; at += db_blocks) {
+            const ssize_t cnt =
+                tsk_fs_file_read(fs_file, (TSK_OFF_T)(at * block_size),
+                    buf.data(), dirblksize, TSK_FS_FILE_READ_FLAG_NONE);
+            if (cnt != (ssize_t)dirblksize) {
+                if (cnt >= 0) {
+                    tsk_error_reset();
+                    tsk_error_set_errno(TSK_ERR_FS_READ);
+                }
+                return TSK_ERR;
+            }
+            const TSK_RETVAL_ENUM ret = parse_block(xfs, fs_dir, fs_name,
+                reinterpret_cast<const uint8_t *>(buf.data()), single);
+            if (ret != TSK_OK) {
+                return ret;
+            }
+        }
+    }
+    return TSK_OK;
+}
+
 /* Reads the entries of directory `fs_dir->fs_file` into `fs_dir`. */
 TSK_RETVAL_ENUM
 read_dir(const XFS_INFO *xfs, TSK_FS_DIR *fs_dir, TSK_FS_NAME *fs_name)
 {
-    TSK_FS_FILE *fs_file = fs_dir->fs_file;
-    const TSK_FS_META *meta = fs_file->meta;
+    const TSK_FS_META *meta = fs_dir->fs_file->meta;
     const DinodeView d =
         dinode_view(xfs, static_cast<const uint8_t *>(meta->content_ptr));
     switch (d.format) {
@@ -214,31 +280,11 @@ read_dir(const XFS_INFO *xfs, TSK_FS_DIR *fs_dir, TSK_FS_NAME *fs_name)
         }
         return parse_shortform(
             xfs, fs_dir, fs_name, meta->addr, d.fork, (size_t)meta->size);
-    case XFS_DINODE_FMT_EXTENTS: {
-        // The size covers the data blocks: one for a block directory, more
-        // for a leaf or node directory (#41).
-        if (meta->size > (TSK_OFF_T)xfs->dirblksize) {
-            set_unsupported();
-            return TSK_ERR;
-        }
-        if (meta->size != (TSK_OFF_T)xfs->dirblksize) {
-            return dir_corrupt();
-        }
-        std::vector<char> buf(xfs->dirblksize);
-        const ssize_t cnt = tsk_fs_file_read(fs_file, 0, buf.data(),
-            xfs->dirblksize, TSK_FS_FILE_READ_FLAG_NONE);
-        if (cnt != (ssize_t)xfs->dirblksize) {
-            if (cnt >= 0) {
-                tsk_error_reset();
-                tsk_error_set_errno(TSK_ERR_FS_READ);
-            }
-            return TSK_ERR;
-        }
-        return parse_block(xfs, fs_dir, fs_name,
-            reinterpret_cast<const uint8_t *>(buf.data()));
-    }
+    case XFS_DINODE_FMT_EXTENTS:
+    case XFS_DINODE_FMT_BTREE:
+        return read_blocks(xfs, fs_dir, fs_name);
     default:
-        // An extent B+tree (#41), or a format a directory doesn't have.
+        // A format a directory doesn't have.
         set_unsupported();
         return TSK_ERR;
     }
@@ -247,9 +293,8 @@ read_dir(const XFS_INFO *xfs, TSK_FS_DIR *fs_dir, TSK_FS_NAME *fs_name)
 } // namespace
 
 /*
- * dir_open_meta: the names of directory `inum`. Short-form and block
- * directories are read; leaf, node and B+tree directories (#41) fail with
- * TSK_ERR_FS_UNSUPFUNC. Deleted names are not recovered, and the root has no
+ * dir_open_meta: the names of directory `inum`, of any format (short-form,
+ * block, leaf, node, B+tree). Deleted names are not recovered, and the root has no
  * $OrphanFiles (orphans need the inode walk, #44); opening $OrphanFiles
  * itself fails with TSK_ERR_FS_UNSUPFUNC.
  */
