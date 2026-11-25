@@ -72,7 +72,7 @@ class XfsFixturesTest : public CppUnit::TestFixture {
     CPPUNIT_TEST(testOpenedByTypeName);
     CPPUNIT_TEST(testGeometry);
     CPPUNIT_TEST(testFsstat);
-    CPPUNIT_TEST(testLaterStepsFailWithTskErrors);
+    CPPUNIT_TEST(testFscheckFailsWithTskError);
     CPPUNIT_TEST(testWalkMatchesManifest);
     CPPUNIT_TEST_SUITE_END();
 
@@ -213,7 +213,7 @@ class XfsFixturesTest : public CppUnit::TestFixture {
 
     // What XFS doesn't implement fails with a TSK error, not a crash:
     // fscheck.
-    void testLaterStepsFailWithTskErrors()
+    void testFscheckFailsWithTskError()
     {
         for (const Fixture &f : {V4, V5}) {
             const std::string v = f.variant;

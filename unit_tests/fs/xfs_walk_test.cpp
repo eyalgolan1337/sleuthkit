@@ -487,14 +487,15 @@ class XfsWalkTest : public CppUnit::TestFixture {
     // The holes of a sparse inode chunk are not inodes: not visited, free or
     // not. A copy of the start of v5 (sparse inodes on) makes the last 4
     // inodes of AG 0's chunk (188-191) a hole: hole mask bit 15, their free
-    // bits set, 60 inodes of which 3 free.
+    // bits set (as the kernel sets them), 60 inodes of which none is free
+    // (189-191 were the free ones; holes are not counted).
     void testInodeWalkSparseChunk()
     {
         std::vector<char> image = image_start(V5, 1 << 20);
         const size_t rec = 3 * 4096 + 56; // AG 0's leaf, block 3: 1 record
         put16(image, rec + 4, 0x8000);    // hole mask
         image[rec + 6] = 60;              // inodes
-        image[rec + 7] = 3;               // free: 189-191 were free already
+        image[rec + 7] = 0;               // free
         put64(image, rec + 8, 0xf000000000000000ULL);
         ImgPtr img;
         FsPtr fs = open_copy("sparse-chunk", image, img);
@@ -511,7 +512,8 @@ class XfsWalkTest : public CppUnit::TestFixture {
     // through the node. A copy of the start of v4 gets a node in free block
     // 34 (xfs_db: AG 0's free space starts there) with one key, 128,
     // pointing to the leaf (block 3), and the AGI says two levels with the
-    // node as root. A node whose child is not one level down is corrupt.
+    // node as root. A node with no records, or whose child is not one level
+    // down, is corrupt.
     void testInodeWalkTreeWithNodes()
     {
         ImgPtr base_img;
@@ -539,6 +541,13 @@ class XfsWalkTest : public CppUnit::TestFixture {
                 numbers(
                     walk_inodes(fs.get(), 0, V4_AG0_LAST, 0, "two levels")));
 
+        put16(image, node + 6, 0);
+        ImgPtr empty_img;
+        FsPtr empty = open_copy("two-level-empty-node", image, empty_img);
+        expect_walk_error(
+            empty.get(), V4_AG0_LAST, TSK_ERR_FS_CORRUPT, "empty node");
+
+        put16(image, node + 6, 1);
         put16(image, node + 4, 2);
         ImgPtr bad_img;
         FsPtr bad = open_copy("two-level-bad", image, bad_img);
@@ -546,8 +555,9 @@ class XfsWalkTest : public CppUnit::TestFixture {
     }
 
     // A damaged AGI or inode B+tree fails the walk (TSK_ERR_FS_CORRUPT), as
-    // does a chunk out of order or outside its AG; a damaged inode is
-    // skipped and the walk goes on. Copies of the start of v4; AG 0's one
+    // does a chunk out of order or outside its AG; a root leaf with no
+    // records is an AG without inodes; a damaged inode is skipped and the
+    // walk goes on. Copies of the start of v4; AG 0's one
     // leaf (block 3) has one record, chunk 128.
     void testInodeWalkDamage()
     {
@@ -563,8 +573,6 @@ class XfsWalkTest : public CppUnit::TestFixture {
                     put32(b, V4_AGI + AGI_ROOT, 20480);
                 }},
             {"inobt-magic", [=](std::vector<char> &b) { put32(b, leaf, 0); }},
-            {"inobt-no-records",
-                [=](std::vector<char> &b) { put16(b, leaf + 6, 0); }},
             {"inobt-too-many-records",
                 [=](std::vector<char> &b) { put16(b, leaf + 6, 300); }},
             {"chunk-past-ag",
@@ -585,6 +593,16 @@ class XfsWalkTest : public CppUnit::TestFixture {
             FsPtr fs = open_copy(c.name, image, img);
             expect_walk_error(
                 fs.get(), V4_AG0_LAST, TSK_ERR_FS_CORRUPT, c.name);
+        }
+
+        // A leaf with no records is a valid root: an AG without inodes.
+        {
+            std::vector<char> image = v4_start();
+            put16(image, leaf + 6, 0);
+            ImgPtr img;
+            FsPtr fs = open_copy("inobt-empty-leaf", image, img);
+            CPPUNIT_ASSERT_EQUAL(size_t{0},
+                walk_inodes(fs.get(), 0, V4_AG0_LAST, 0, "empty leaf").size());
         }
 
         std::vector<char> image = v4_start();
