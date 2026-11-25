@@ -240,6 +240,27 @@ typedef struct {
 #define XFS_BMBT_KEY_SIZE 8
 #define XFS_BMBT_PTR_SIZE 8
 
+/* --- Symlinks (xfs_format.h) --- */
+
+/* A target is at most this long (the kernel creates shorter ones only). It
+ * is in the data fork if it fits (format local), else in blocks (a remote
+ * symlink, format extents). */
+#define XFS_SYMLINK_MAXLEN 1024
+
+/* On v5, each extent of a remote symlink starts with this header; the
+ * target's bytes follow. v4 blocks hold the bytes alone. */
+#define XFS_SYMLINK_MAGIC 0x58534c4d /* "XSLM" */
+typedef struct {
+    uint8_t sl_magic[4];
+    uint8_t sl_offset[4]; /* of this piece in the target */
+    uint8_t sl_bytes[4];  /* length of this piece */
+    uint8_t sl_crc[4];
+    uint8_t sl_uuid[16];
+    uint8_t sl_owner[8]; /* the symlink's inode number */
+    uint8_t sl_blkno[8];
+    uint8_t sl_lsn[8];
+} xfs_dsymlink_hdr;
+
 /* --- Inode allocation (xfs_format.h) --- */
 
 /* The AGI, the AG's inode header, in its third sector. Only its start, the

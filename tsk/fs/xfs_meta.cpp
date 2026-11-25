@@ -6,7 +6,8 @@
  * Read-only XFS support (the fork's, #11): inodes and file content.
  *
  * Inode numbers and AG addresses, inode allocation (the AG's inode B+tree),
- * inode lookup, the data fork as the default attribute, and istat. See
+ * inode lookup, symlink targets, the data fork as the default attribute, and
+ * istat. See
  * xfs.cpp for the address scheme and docs/llm/fs.md ("XFS").
  *
  * C++14. Nothing here throws: no C++ exception can reach the C callers.
@@ -14,10 +15,13 @@
 
 #include "tsk_xfs.h"
 
+#include <algorithm>
 #include <cinttypes>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <new>
 #include <vector>
 
@@ -28,6 +32,7 @@ static_assert(offsetof(xfs_dinode, di_size) == 56, "");
 static_assert(offsetof(xfs_dinode, di_crtime) == 144, "");
 static_assert(sizeof(xfs_bmbt_rec) == 16, "");
 static_assert(sizeof(xfs_inobt_rec) == 16, "");
+static_assert(sizeof(xfs_dsymlink_hdr) == 56, "");
 
 namespace tsk_xfs {
 
@@ -97,7 +102,7 @@ split_inum(const XFS_INFO *xfs, TSK_INUM_T inum, InodeAddr &a)
 
 /* --- Inode allocation: the AG's inode B+tree --- */
 
-enum class Alloc { ALLOCATED, FREE, ERROR };
+enum class Alloc { ALLOCATED, FREE, FAILED };
 
 /*
  * Whether the inode at `a` is allocated, as the inode B+tree of its AG
@@ -124,7 +129,7 @@ inode_allocation(XFS_INFO *xfs, const InodeAddr &a)
             tsk_error_reset();
             tsk_error_set_errno(TSK_ERR_FS_READ);
         }
-        return Alloc::ERROR;
+        return Alloc::FAILED;
     }
     const uint32_t level = tsk_getu32(TSK_BIG_ENDIAN, agi.agi_level);
     uint32_t block = tsk_getu32(TSK_BIG_ENDIAN, agi.agi_root);
@@ -133,7 +138,7 @@ inode_allocation(XFS_INFO *xfs, const InodeAddr &a)
         tsk_getu32(TSK_BIG_ENDIAN, agi.agi_seqno) != a.agno || level == 0 ||
         level > XFS_BTREE_MAXLEVELS || block >= ag_blocks) {
         set_corrupt();
-        return Alloc::ERROR;
+        return Alloc::FAILED;
     }
 
     const bool crc = xfs->version == XFS_SB_VERSION_5;
@@ -144,7 +149,7 @@ inode_allocation(XFS_INFO *xfs, const InodeAddr &a)
     const uint8_t *b = reinterpret_cast<const uint8_t *>(buf.data());
     for (uint32_t want = level - 1;; --want) {
         if (!read_ag_block(xfs, a.agno, block, buf.data())) {
-            return Alloc::ERROR;
+            return Alloc::FAILED;
         }
         const xfs_btree_sblock *h =
             reinterpret_cast<const xfs_btree_sblock *>(b);
@@ -152,12 +157,12 @@ inode_allocation(XFS_INFO *xfs, const InodeAddr &a)
         if (tsk_getu32(TSK_BIG_ENDIAN, h->bb_magic) != magic ||
             tsk_getu16(TSK_BIG_ENDIAN, h->bb_level) != want) {
             set_corrupt();
-            return Alloc::ERROR;
+            return Alloc::FAILED;
         }
         if (want == 0) {
             if (numrecs > space / sizeof(xfs_inobt_rec)) {
                 set_corrupt();
-                return Alloc::ERROR;
+                return Alloc::FAILED;
             }
             const xfs_inobt_rec *recs =
                 reinterpret_cast<const xfs_inobt_rec *>(b + hdr);
@@ -179,7 +184,7 @@ inode_allocation(XFS_INFO *xfs, const InodeAddr &a)
         const size_t maxrecs = space / 8;
         if (numrecs == 0 || numrecs > maxrecs) {
             set_corrupt();
-            return Alloc::ERROR;
+            return Alloc::FAILED;
         }
         const uint8_t *keys = b + hdr;
         const uint8_t *ptrs = keys + maxrecs * 4;
@@ -196,7 +201,7 @@ inode_allocation(XFS_INFO *xfs, const InodeAddr &a)
         block = tsk_getu32(TSK_BIG_ENDIAN, ptrs + 4 * found);
         if (block >= ag_blocks) {
             set_corrupt();
-            return Alloc::ERROR;
+            return Alloc::FAILED;
         }
     }
 }
@@ -270,7 +275,7 @@ xfs_dinode_load(XFS_INFO *xfs, TSK_INUM_T inum, uint8_t *raw)
     const bool in_range = inum >= fs->first_inum && inum <= fs->last_inum - 1 &&
         split_inum(xfs, inum, a);
     const Alloc alloc = in_range ? inode_allocation(xfs, a) : Alloc::FREE;
-    if (alloc == Alloc::ERROR) {
+    if (alloc == Alloc::FAILED) {
         return 1;
     }
     if (alloc == Alloc::FREE) {
@@ -373,12 +378,14 @@ dinode_copy(const XFS_INFO *xfs, TSK_FS_META *meta, TSK_INUM_T inum)
     meta->content_type = TSK_FS_META_CONTENT_TYPE_DEFAULT;
 }
 
+uint8_t load_link(XFS_INFO *xfs, TSK_FS_META *meta);
+
 } // namespace
 
 /*
  * file_add_meta: the inode `inum`, or the virtual $OrphanFiles directory
  * for last_inum. meta->content_ptr keeps the raw inode, which load_attrs
- * and istat read.
+ * and istat read. A symlink gets its target in meta->link.
  */
 uint8_t
 xfs_inode_lookup(TSK_FS_INFO *fs, TSK_FS_FILE *a_fs_file, TSK_INUM_T inum)
@@ -414,7 +421,7 @@ xfs_inode_lookup(TSK_FS_INFO *fs, TSK_FS_FILE *a_fs_file, TSK_INUM_T inum)
         return 1;
     }
     dinode_copy(xfs, meta, inum);
-    return 0;
+    return load_link(xfs, meta);
 }
 
 namespace {
@@ -491,6 +498,116 @@ fsblock_addr(
     addr = ag_block(xfs, (uint32_t)agno, (uint32_t)agbno);
     return true;
 }
+
+/* --- Symlink targets --- */
+
+enum class Target { READ, NONE, FAILED };
+
+/*
+ * Reads the `size` bytes of a remote symlink's target into `out`, from the
+ * extent records in data fork `d`: the extents map the target from file
+ * block 0 without holes, and on v5 each starts with a header saying which
+ * piece of the target follows it. NONE if the extents or a header are not
+ * that, or hold fewer bytes. FAILED on a short read (TSK_ERR_FS_READ).
+ */
+Target
+remote_target(XFS_INFO *xfs, const DinodeView &d, char *out, size_t size)
+{
+    TSK_FS_INFO *fs = &xfs->fs_info;
+    if (d.nextents > d.fork_size / sizeof(xfs_bmbt_rec)) {
+        return Target::NONE;
+    }
+    const xfs_bmbt_rec *recs = reinterpret_cast<const xfs_bmbt_rec *>(d.fork);
+    const size_t hdr =
+        xfs->version == XFS_SB_VERSION_5 ? sizeof(xfs_dsymlink_hdr) : 0;
+    char buf[sizeof(xfs_dsymlink_hdr) + XFS_SYMLINK_MAXLEN];
+    size_t done = 0;     // bytes of the target read so far
+    uint64_t cursor = 0; // file block where the extents end so far
+    for (uint64_t i = 0; i < d.nextents && done < size; ++i) {
+        const Extent e = decode_extent(recs[i]);
+        TSK_DADDR_T addr = 0;
+        if (e.count == 0 || e.startoff != cursor ||
+            !fsblock_addr(xfs, e.fsblock, e.count, addr)) {
+            return Target::NONE;
+        }
+        cursor += e.count;
+        // At most 2^21 blocks of 64 KiB: no overflow.
+        const uint64_t space = e.count * fs->block_size - hdr;
+        const size_t take = (size_t)std::min<uint64_t>(size - done, space);
+        const ssize_t cnt =
+            tsk_fs_read(fs, (TSK_OFF_T)addr * fs->block_size, buf, hdr + take);
+        if (cnt != (ssize_t)(hdr + take)) {
+            if (cnt >= 0) {
+                tsk_error_reset();
+                tsk_error_set_errno(TSK_ERR_FS_READ);
+            }
+            return Target::FAILED;
+        }
+        if (hdr != 0) {
+            const xfs_dsymlink_hdr *h =
+                reinterpret_cast<const xfs_dsymlink_hdr *>(buf);
+            if (tsk_getu32(TSK_BIG_ENDIAN, h->sl_magic) != XFS_SYMLINK_MAGIC ||
+                tsk_getu32(TSK_BIG_ENDIAN, h->sl_offset) != done ||
+                tsk_getu32(TSK_BIG_ENDIAN, h->sl_bytes) != take) {
+                return Target::NONE;
+            }
+        }
+        memcpy(out + done, buf + hdr, take);
+        done += take;
+    }
+    return done == size ? Target::READ : Target::NONE;
+}
+
+/*
+ * Sets meta->link of a symlink to its target, from the raw inode in
+ * meta->content_ptr: the data fork's bytes (format local) or the blocks of
+ * a remote symlink (format extents). Control characters become '^', as in
+ * ext's targets. Any other file, and a symlink whose target can't be put
+ * together (a size no target has, or see remote_target), has none; only a
+ * read error fails, as it does in ext's inode lookup.
+ */
+uint8_t
+load_link(XFS_INFO *xfs, TSK_FS_META *meta)
+{
+    // tsk_fs_meta_reset keeps the target of the inode before.
+    free(meta->link);
+    meta->link = NULL;
+    if (meta->type != TSK_FS_META_TYPE_LNK || meta->size <= 0 ||
+        meta->size > XFS_SYMLINK_MAXLEN) {
+        return 0;
+    }
+    const DinodeView d =
+        dinode_view(xfs, static_cast<const uint8_t *>(meta->content_ptr));
+    const size_t size = (size_t)meta->size;
+    char *link = static_cast<char *>(tsk_malloc(size + 1));
+    if (link == NULL) {
+        return 1;
+    }
+    Target target = Target::NONE;
+    if (d.format == XFS_DINODE_FMT_LOCAL) {
+        if (size <= d.fork_size) {
+            memcpy(link, d.fork, size);
+            target = Target::READ;
+        }
+    }
+    else if (d.format == XFS_DINODE_FMT_EXTENTS) {
+        target = remote_target(xfs, d, link, size);
+    }
+    if (target != Target::READ) {
+        free(link);
+        return target == Target::FAILED ? 1 : 0;
+    }
+    link[size] = '\0';
+    for (size_t i = 0; link[i] != '\0'; ++i) {
+        if (TSK_IS_CNTRL(link[i])) {
+            link[i] = '^';
+        }
+    }
+    meta->link = link;
+    return 0;
+}
+
+/* --- File content: the runs of the extent records --- */
 
 /*
  * The run list of the `count` extent records at `recs`, covering the file's
