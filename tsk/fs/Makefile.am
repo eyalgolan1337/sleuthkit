@@ -18,7 +18,8 @@ libtskfs_la_SOURCES  = tsk_fs_i.h fs_inode.c fs_io.c fs_block.c fs_open.c \
     dcalc_lib.c dcat_lib.c dls_lib.c dstat_lib.c ffind_lib.c \
     fls_lib.c icat_lib.c ifind_lib.c ils_lib.c usn_journal.c usnjls_lib.c \
     walk_cpp.cpp yaffs.cpp logical_fs.cpp \
-    apfs.cpp apfs_compat.cpp apfs_fs.cpp apfs_open.cpp encryptionHelper.cpp
+    apfs.cpp apfs_compat.cpp apfs_fs.cpp apfs_open.cpp encryptionHelper.cpp \
+    tsk_xfs.h xfs.cpp
 
 indent:
 	indent *.c *.h
