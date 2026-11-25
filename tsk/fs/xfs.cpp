@@ -363,6 +363,13 @@ inode_allocation(XFS_INFO *xfs, const InodeAddr &a)
 
 /* --- Inodes --- */
 
+/* The size of the inode core of an inode version: the data fork follows. */
+size_t
+dinode_core_size(uint8_t version)
+{
+    return version >= 3 ? XFS_DINODE_CORE_SIZE_V3 : XFS_DINODE_CORE_SIZE_V2;
+}
+
 /* The fields of a raw inode (the inode size of the file system, as on disk)
  * that the module uses, in host order. */
 struct DinodeView {
@@ -370,6 +377,7 @@ struct DinodeView {
     uint16_t mode;
     uint8_t version;
     uint8_t format;
+    uint16_t flags;
     uint64_t flags2;     /* 0 before v3 */
     uint64_t nextents;   /* data fork extent records */
     const uint8_t *fork; /* the data fork */
@@ -384,13 +392,13 @@ dinode_view(const XFS_INFO *xfs, const uint8_t *raw)
     d.mode = tsk_getu16(TSK_BIG_ENDIAN, d.core->di_mode);
     d.version = d.core->di_version;
     d.format = d.core->di_format;
+    d.flags = tsk_getu16(TSK_BIG_ENDIAN, d.core->di_flags);
     d.flags2 =
         d.version >= 3 ? tsk_getu64(TSK_BIG_ENDIAN, d.core->di_flags2) : 0;
     d.nextents = (d.flags2 & XFS_DIFLAG2_NREXT64)
         ? tsk_getu64(TSK_BIG_ENDIAN, d.core->di_big_nextents)
         : tsk_getu32(TSK_BIG_ENDIAN, d.core->di_nextents);
-    const size_t core =
-        d.version >= 3 ? XFS_DINODE_CORE_SIZE_V3 : XFS_DINODE_CORE_SIZE_V2;
+    const size_t core = dinode_core_size(d.version);
     d.fork = raw + core;
     d.fork_size = d.core->di_forkoff != 0 ? size_t{d.core->di_forkoff} * 8
                                           : xfs->inodesize - core;
@@ -413,9 +421,7 @@ dinode_sound(const XFS_INFO *xfs, TSK_INUM_T inum, const uint8_t *raw)
     if (v == 3 && tsk_getu64(TSK_BIG_ENDIAN, core->di_ino) != inum) {
         return false;
     }
-    const size_t core_size =
-        v == 3 ? XFS_DINODE_CORE_SIZE_V3 : XFS_DINODE_CORE_SIZE_V2;
-    return core_size + size_t{core->di_forkoff} * 8 < xfs->inodesize;
+    return dinode_core_size(v) + size_t{core->di_forkoff} * 8 < xfs->inodesize;
 }
 
 /*
@@ -428,16 +434,12 @@ uint8_t
 xfs_dinode_load(XFS_INFO *xfs, TSK_INUM_T inum, uint8_t *raw)
 {
     TSK_FS_INFO *fs = &xfs->fs_info;
-    InodeAddr a;
-    // last_inum - 1: last_inum is the virtual $OrphanFiles.
-    if (inum < fs->first_inum || inum > fs->last_inum - 1 ||
-        !split_inum(xfs, inum, a)) {
-        tsk_error_reset();
-        tsk_error_set_errno(TSK_ERR_FS_INODE_NUM);
-        tsk_error_set_errstr("xfs_dinode_load: address: %" PRIuINUM, inum);
-        return 1;
-    }
-    const Alloc alloc = inode_allocation(xfs, a);
+    InodeAddr a{};
+    // last_inum - 1: last_inum is the virtual $OrphanFiles. A number outside
+    // the AGs is no inode, like a free one.
+    const bool in_range = inum >= fs->first_inum && inum <= fs->last_inum - 1 &&
+        split_inum(xfs, inum, a);
+    const Alloc alloc = in_range ? inode_allocation(xfs, a) : Alloc::FREE;
     if (alloc == Alloc::ERROR) {
         return 1;
     }
@@ -689,7 +691,8 @@ extent_runs(const XFS_INFO *xfs, const DinodeView &d, TSK_OFF_T size,
  * load_attrs: the default (data) attribute from the data fork of the raw
  * inode in meta->content_ptr. Extent lists are non-resident runs; local
  * data (short-form directories, inline symlinks) is resident; device files
- * have no data. Extent B+trees are not read yet (#42): TSK_ERR_FS_UNSUPFUNC.
+ * have no data. Extent B+trees are not read yet (#42), and the extents of a
+ * file on the realtime device are not in the image: TSK_ERR_FS_UNSUPFUNC.
  * Extended attributes (the attr fork) are not read.
  */
 uint8_t
@@ -704,9 +707,6 @@ xfs_load_attrs(TSK_FS_FILE *fs_file)
     const XFS_INFO *xfs = reinterpret_cast<const XFS_INFO *>(fs_file->fs_info);
     if (meta->attr != NULL && meta->attr_state == TSK_FS_META_ATTR_STUDIED) {
         return 0;
-    }
-    if (meta->attr_state == TSK_FS_META_ATTR_ERROR) {
-        return 1;
     }
     if (meta->content_ptr == NULL || meta->content_len < xfs->inodesize) {
         tsk_error_reset();
@@ -734,6 +734,11 @@ xfs_load_attrs(TSK_FS_FILE *fs_file)
         }
         break;
     case XFS_DINODE_FMT_EXTENTS:
+        if (d.flags & XFS_DIFLAG_REALTIME) {
+            // Its extents are on the realtime device, not in the image.
+            set_unsupported();
+            return 1;
+        }
         if (extent_runs(xfs, d, meta->size, runs, end_blocks)) {
             return 1;
         }
@@ -763,10 +768,17 @@ xfs_load_attrs(TSK_FS_FILE *fs_file)
         }
     }
     else {
-        const TSK_OFF_T block_size = xfs->fs_info.block_size;
-        const TSK_OFF_T rounded =
-            (meta->size + block_size - 1) / block_size * block_size;
-        const TSK_OFF_T runs_end = (TSK_OFF_T)end_blocks * block_size;
+        // The runs cover at least the size rounded up to blocks (device
+        // files have none); near the largest file size that is more than
+        // TSK_OFF_T holds.
+        const uint64_t runs_bytes =
+            (uint64_t)end_blocks * xfs->fs_info.block_size;
+        TSK_OFF_T alloc_size = runs_bytes > (uint64_t)INT64_MAX
+            ? INT64_MAX
+            : (TSK_OFF_T)runs_bytes;
+        if (alloc_size < meta->size) {
+            alloc_size = meta->size;
+        }
         attr = tsk_fs_attrlist_getnew(meta->attr, TSK_FS_ATTR_NONRES);
         if (attr == NULL) {
             tsk_fs_attr_run_free(runs);
@@ -774,8 +786,7 @@ xfs_load_attrs(TSK_FS_FILE *fs_file)
         }
         if (tsk_fs_attr_set_run(fs_file, attr, runs, NULL,
                 TSK_FS_ATTR_TYPE_DEFAULT, TSK_FS_ATTR_ID_DEFAULT, meta->size,
-                meta->size, runs_end > rounded ? runs_end : rounded,
-                TSK_FS_ATTR_FLAG_NONE, 0)) {
+                meta->size, alloc_size, TSK_FS_ATTR_FLAG_NONE, 0)) {
             tsk_fs_attr_run_free(runs);
             return 1;
         }

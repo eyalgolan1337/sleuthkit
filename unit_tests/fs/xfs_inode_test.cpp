@@ -8,6 +8,7 @@
 #include "manifest_check.h"
 #include "xfs_fixture_data.h"
 
+#include "harness.h"
 #include "manifest.h"
 #include "toolcheck.h"
 
@@ -20,6 +21,7 @@
 #include <cstdlib>
 #include <ctime>
 #include <fstream>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -39,8 +41,8 @@ const char LATER[] = "/symlink-short target symlink targets come in #43\n"
                      "/symlink-long target symlink targets come in #43\n";
 
 // The harness records a crtime of 0 as no crtime (libtsk has no other way to
-// say there is none), so a v5 inode created at the epoch differs.
-const char CRTIME_0[] = "/times/epoch crtime crtime 0 reads as none\n";
+// say there is none), so a v5 inode created at the epoch differs (#50).
+const char CRTIME_0[] = "/times/epoch crtime crtime 0 reads as none (#50)\n";
 
 // The differences a Fixture's comparison tolerates.
 std::string
@@ -128,6 +130,12 @@ class XfsInodeTest : public CppUnit::TestFixture {
     CPPUNIT_TEST(testIstatMetadata);
     CPPUNIT_TEST(testIstatBlocks);
     CPPUNIT_TEST(testIstatNoInodeGivesError);
+    CPPUNIT_TEST(testIstatSkewAndBlockCount);
+    CPPUNIT_TEST(testAtimeExact);
+    CPPUNIT_TEST(testInodeTreeWithNodes);
+    CPPUNIT_TEST(testCorruptMetadataGivesError);
+    CPPUNIT_TEST(testVersion1Inode);
+    CPPUNIT_TEST(testRealtimeFileNotRead);
     CPPUNIT_TEST_SUITE_END();
 
   public:
@@ -495,7 +503,313 @@ class XfsInodeTest : public CppUnit::TestFixture {
         }
     }
 
+    // istat with a clock skew prints the times shifted by it first
+    // ("Adjusted Inode Times:"), then the inode's own ("Original Inode
+    // Times:"); with a block count it lists that many blocks.
+    void testIstatSkewAndBlockCount()
+    {
+        const UtcZone utc;
+        const Fixture &f = fstest::V5;
+        const tskval::Manifest manifest = read_manifest(f);
+        ImgPtr img = open_image(image_path(f));
+        FsPtr fs(tsk_fs_open_img(img.get(), 0, TSK_FS_TYPE_XFS));
+        CPPUNIT_ASSERT_MESSAGE(error_text(), fs != nullptr);
+        const tskval::Entry want = entry_of(manifest, "/multiblock.bin");
+
+        bool ok = false;
+        const std::string text = fstest::printed_text(
+            [&](FILE *out) {
+                return fs->istat(
+                    fs.get(), TSK_FS_ISTAT_NONE, out, want.inode, 0, 3600);
+            },
+            ok);
+        CPPUNIT_ASSERT_MESSAGE(error_text(), ok);
+        const size_t adjusted = text.find("\nAdjusted Inode Times:\n");
+        const size_t original = text.find("\nOriginal Inode Times:\n");
+        CPPUNIT_ASSERT_MESSAGE(text,
+            adjusted != std::string::npos && original != std::string::npos &&
+                adjusted < original);
+        // The original times, as istat's check reads them.
+        tskval::Entry got;
+        std::string error;
+        CPPUNIT_ASSERT_MESSAGE(error, tskval::parse_istat(text, got, error));
+        CPPUNIT_ASSERT_MESSAGE(text, want.mtime == got.mtime);
+        CPPUNIT_ASSERT_MESSAGE(text, want.crtime == got.crtime);
+        // The adjusted ones, read the same way: an hour earlier.
+        std::string shifted = text.substr(0, original);
+        shifted.replace(adjusted,
+            std::string("\nAdjusted Inode Times:\n").size(),
+            "\nInode Times:\n");
+        CPPUNIT_ASSERT_MESSAGE(error, tskval::parse_istat(shifted, got, error));
+        CPPUNIT_ASSERT_EQUAL(want.mtime.sec - 3600, got.mtime.sec);
+        CPPUNIT_ASSERT_EQUAL(want.mtime.nsec, got.mtime.nsec);
+        CPPUNIT_ASSERT_EQUAL(want.ctime.sec - 3600, got.ctime.sec);
+        CPPUNIT_ASSERT_EQUAL(want.crtime.sec - 3600, got.crtime.sec);
+
+        const std::string two = fstest::printed_text(
+            [&](FILE *out) {
+                return fs->istat(
+                    fs.get(), TSK_FS_ISTAT_NONE, out, want.inode, 2, 0);
+            },
+            ok);
+        CPPUNIT_ASSERT_MESSAGE(error_text(), ok);
+        CPPUNIT_ASSERT_MESSAGE(
+            two, ends_with(two, "\nDirect Blocks:\n24 25 \n"));
+    }
+
+    // atime (which the comparison step never compares) is exact to the
+    // nanosecond too, classic and bigtime.
+    void testAtimeExact()
+    {
+        for (const Fixture &f : ALL_FIXTURES) {
+            const std::string v = f.variant;
+            const tskval::Manifest manifest = read_manifest(f);
+            ImgPtr img = open_image(image_path(f));
+            FsPtr fs(tsk_fs_open_img(img.get(), 0, TSK_FS_TYPE_XFS));
+            CPPUNIT_ASSERT_MESSAGE(v + ": " + error_text(), fs != nullptr);
+            size_t checked = 0;
+            for (const tskval::Entry &e : manifest.entries) {
+                if (!e.has_atime) {
+                    continue;
+                }
+                fstest::FilePtr file(
+                    tsk_fs_file_open_meta(fs.get(), nullptr, e.inode));
+                CPPUNIT_ASSERT_MESSAGE(
+                    v + ": " + error_text(), file != nullptr);
+                const tskval::Entry got =
+                    tskval::entry_from_meta(e.path, *file->meta);
+                if (got.atime != e.atime) {
+                    CPPUNIT_FAIL(v + ": " + tskval::encode_bytes(e.path) +
+                        ": atime " + tskval::format_timestamp(got.atime) +
+                        ", expected " + tskval::format_timestamp(e.atime));
+                }
+                ++checked;
+            }
+            CPPUNIT_ASSERT_EQUAL_MESSAGE(
+                v + ": entries with atime", manifest.entries.size(), checked);
+        }
+    }
+
+    // An inode B+tree of two levels (a node above the leaf): lookup goes
+    // down the node's key for the inode. The Fixtures' trees are one leaf,
+    // so a copy of the start of v4 gets a node in free block 31 (xfs_db:
+    // AG 0's free space starts there) with one key, 128, pointing to the
+    // leaf (block 3), and the AGI says two levels with the node as root.
+    void testInodeTreeWithNodes()
+    {
+        std::vector<char> image = v4_start();
+        const size_t node = 31 * V4_BLOCK;
+        put32(image, node, 0x49414254);     // "IABT"
+        put16(image, node + 4, 1);          // level
+        put16(image, node + 6, 1);          // one key
+        put32(image, node + 8, 0xffffffff); // no left sibling
+        put32(image, node + 12, 0xffffffff);
+        put32(image, node + 16, 128); // key: the chunk's first inode
+        const size_t maxrecs = (V4_BLOCK - 16) / 8;
+        put32(image, node + 16 + maxrecs * 4, 3); // pointer: the leaf
+        CPPUNIT_ASSERT_EQUAL(3u, get32(image, V4_AGI + AGI_ROOT));
+        put32(image, V4_AGI + AGI_ROOT, 31);
+        put32(image, V4_AGI + AGI_LEVEL, 2);
+
+        ImgPtr base_img;
+        FsPtr base = open_copy("one-level", v4_start(), base_img);
+        ImgPtr img;
+        FsPtr fs = open_copy("two-level", image, img);
+        CPPUNIT_ASSERT(
+            read_content(base.get(), 133) == read_content(fs.get(), 133));
+        // Free in the leaf's chunk, and below the node's first key.
+        for (const TSK_INUM_T inum : {TSK_INUM_T{191}, TSK_INUM_T{64}}) {
+            tsk_error_reset();
+            fstest::FilePtr file(
+                tsk_fs_file_open_meta(fs.get(), nullptr, inum));
+            CPPUNIT_ASSERT_MESSAGE(std::to_string(inum), file == nullptr);
+            CPPUNIT_ASSERT_EQUAL(static_cast<uint32_t>(TSK_ERR_FS_INODE_NUM),
+                tsk_error_get_errno());
+        }
+        // A node whose child is not one level down is corrupt.
+        put16(image, node + 4, 2);
+        ImgPtr bad_img;
+        FsPtr bad = open_copy("two-level-bad", image, bad_img);
+        expect_lookup_error(bad.get(), 133, TSK_ERR_FS_CORRUPT, "node level");
+    }
+
+    // Metadata that can't be right gives a TSK error, never a file or wrong
+    // content: in a copy of the start of v4, a damaged AGI or inode B+tree
+    // block fails the lookup (TSK_ERR_FS_CORRUPT); a damaged inode fails it
+    // (TSK_ERR_FS_INODE_COR); damaged extent records or local data more than
+    // the fork holds fail the read (TSK_ERR_FS_INODE_COR).
+    void testCorruptMetadataGivesError()
+    {
+        const struct {
+            const char *name;
+            std::function<void(std::vector<char> &)> damage;
+            bool lookup; // the lookup fails, else reading the content
+            uint32_t err;
+        } cases[] = {
+            {"agi-magic", [](std::vector<char> &b) { put32(b, V4_AGI, 0); },
+                true, TSK_ERR_FS_CORRUPT},
+            {"agi-level-0",
+                [](std::vector<char> &b) { put32(b, V4_AGI + AGI_LEVEL, 0); },
+                true, TSK_ERR_FS_CORRUPT},
+            {"inobt-magic",
+                [](std::vector<char> &b) { put32(b, 3 * V4_BLOCK, 0); }, true,
+                TSK_ERR_FS_CORRUPT},
+            {"inode-magic",
+                [](std::vector<char> &b) { put16(b, INODE_133, 0); }, true,
+                TSK_ERR_FS_INODE_COR},
+            {"inode-version-3",
+                [](std::vector<char> &b) { b[INODE_133 + 4] = 3; }, true,
+                TSK_ERR_FS_INODE_COR},
+            {"extent-past-ag",
+                [](std::vector<char> &b) {
+                    put64(b, FORK_133 + 8, (uint64_t{20480} << 21) | 4);
+                },
+                false, TSK_ERR_FS_INODE_COR},
+            {"extent-empty",
+                [](std::vector<char> &b) {
+                    put64(b, FORK_133 + 8, uint64_t{13} << 21);
+                },
+                false, TSK_ERR_FS_INODE_COR},
+            {"extents-more-than-fork",
+                [](std::vector<char> &b) { put32(b, INODE_133 + 76, 100); },
+                false, TSK_ERR_FS_INODE_COR},
+            {"local-more-than-fork",
+                [](std::vector<char> &b) { b[INODE_133 + 5] = 1; }, false,
+                TSK_ERR_FS_INODE_COR},
+        };
+        for (const auto &c : cases) {
+            std::vector<char> image = v4_start();
+            c.damage(image);
+            ImgPtr img;
+            FsPtr fs = open_copy(c.name, image, img);
+            if (c.lookup) {
+                expect_lookup_error(fs.get(), 133, c.err, c.name);
+                continue;
+            }
+            fstest::FilePtr file(tsk_fs_file_open_meta(fs.get(), nullptr, 133));
+            CPPUNIT_ASSERT_MESSAGE(
+                c.name + (": " + error_text()), file != nullptr);
+            char buf[16];
+            tsk_error_reset();
+            CPPUNIT_ASSERT_EQUAL_MESSAGE(c.name, ssize_t{-1},
+                tsk_fs_file_read(file.get(), 0, buf, sizeof(buf),
+                    TSK_FS_FILE_READ_FLAG_NONE));
+            CPPUNIT_ASSERT_EQUAL_MESSAGE(c.name, c.err, tsk_error_get_errno());
+            tsk_error_reset();
+        }
+    }
+
+    // A v1 inode (old v4 file systems) keeps its link count in di_onlink.
+    // /multiblock.bin of a copy of v4 made version 1 with 7 links.
+    void testVersion1Inode()
+    {
+        std::vector<char> image = v4_start();
+        image[INODE_133 + 4] = 1;
+        put16(image, INODE_133 + 6, 7);
+        ImgPtr img;
+        FsPtr fs = open_copy("v1", image, img);
+        fstest::FilePtr file(tsk_fs_file_open_meta(fs.get(), nullptr, 133));
+        CPPUNIT_ASSERT_MESSAGE(error_text(), file != nullptr);
+        CPPUNIT_ASSERT_EQUAL(7, file->meta->nlink);
+        CPPUNIT_ASSERT_EQUAL(TSK_OFF_T{14336}, file->meta->size);
+    }
+
+    // A file on the realtime device (XFS_DIFLAG_REALTIME) has extents that
+    // are not in the image: reading it is not supported, rather than
+    // reading the data device's blocks of the same numbers.
+    void testRealtimeFileNotRead()
+    {
+        std::vector<char> image = v4_start();
+        image[INODE_133 + 91] = static_cast<char>(image[INODE_133 + 91] | 1);
+        ImgPtr img;
+        FsPtr fs = open_copy("realtime", image, img);
+        fstest::FilePtr file(tsk_fs_file_open_meta(fs.get(), nullptr, 133));
+        CPPUNIT_ASSERT_MESSAGE(error_text(), file != nullptr);
+        char buf[16];
+        tsk_error_reset();
+        CPPUNIT_ASSERT_EQUAL(ssize_t{-1},
+            tsk_fs_file_read(
+                file.get(), 0, buf, sizeof(buf), TSK_FS_FILE_READ_FLAG_NONE));
+        CPPUNIT_ASSERT_EQUAL(
+            static_cast<uint32_t>(TSK_ERR_FS_UNSUPFUNC), tsk_error_get_errno());
+        tsk_error_reset();
+    }
+
   private:
+    // The v4 Fixture (xfs_db): 4 KiB blocks, 512-byte sectors, 256-byte
+    // inodes; AG 0's AGI in its third sector, its inode B+tree a single
+    // leaf in block 3; /multiblock.bin is inode 133 (block 8, index 5), a
+    // v2 inode with one extent (file blocks 0-3 at block 13).
+    static const size_t V4_BLOCK = 4096;
+    static const size_t V4_AGI = 2 * 512;
+    static const size_t AGI_ROOT = 20, AGI_LEVEL = 24;
+    static const size_t INODE_133 = 8 * 4096 + 5 * 256;
+    static const size_t FORK_133 = INODE_133 + 100;
+
+    // The first MiB of v4: AG 0's headers, inodes and /multiblock.bin.
+    static std::vector<char> v4_start()
+    {
+        return image_start(fstest::V4, 1 << 20);
+    }
+
+    // Writes `image` as xfs-inode-<name>.img and opens it as XFS; `img`
+    // keeps the image open.
+    static FsPtr open_copy(
+        const std::string &name, const std::vector<char> &image, ImgPtr &img)
+    {
+        img = open_image(write_image(name, image), TSK_IMG_TYPE_RAW);
+        FsPtr fs(tsk_fs_open_img(img.get(), 0, TSK_FS_TYPE_XFS));
+        CPPUNIT_ASSERT_MESSAGE(name + ": " + error_text(), fs != nullptr);
+        return fs;
+    }
+
+    static std::vector<char> read_content(TSK_FS_INFO *fs, TSK_INUM_T inum)
+    {
+        fstest::FilePtr file(tsk_fs_file_open_meta(fs, nullptr, inum));
+        CPPUNIT_ASSERT_MESSAGE(error_text(), file != nullptr);
+        std::vector<char> buf(static_cast<size_t>(file->meta->size));
+        CPPUNIT_ASSERT_EQUAL(static_cast<ssize_t>(buf.size()),
+            tsk_fs_file_read(file.get(), 0, buf.data(), buf.size(),
+                TSK_FS_FILE_READ_FLAG_NONE));
+        return buf;
+    }
+
+    static void expect_lookup_error(
+        TSK_FS_INFO *fs, TSK_INUM_T inum, uint32_t err, const std::string &what)
+    {
+        tsk_error_reset();
+        fstest::FilePtr file(tsk_fs_file_open_meta(fs, nullptr, inum));
+        CPPUNIT_ASSERT_MESSAGE(what + ": opened", file == nullptr);
+        CPPUNIT_ASSERT_EQUAL_MESSAGE(
+            what + ": " + error_text(), err, tsk_error_get_errno());
+        tsk_error_reset();
+    }
+
+    // Big-endian stores and loads in an image copy.
+    static void put16(std::vector<char> &b, size_t off, uint16_t v)
+    {
+        b[off] = static_cast<char>(v >> 8);
+        b[off + 1] = static_cast<char>(v);
+    }
+    static void put32(std::vector<char> &b, size_t off, uint32_t v)
+    {
+        put16(b, off, static_cast<uint16_t>(v >> 16));
+        put16(b, off + 2, static_cast<uint16_t>(v));
+    }
+    static void put64(std::vector<char> &b, size_t off, uint64_t v)
+    {
+        put32(b, off, static_cast<uint32_t>(v >> 32));
+        put32(b, off + 4, static_cast<uint32_t>(v));
+    }
+    static uint32_t get32(const std::vector<char> &b, size_t off)
+    {
+        uint32_t v = 0;
+        for (size_t i = 0; i < 4; ++i) {
+            v = (v << 8) | static_cast<uint8_t>(b[off + i]);
+        }
+        return v;
+    }
+
     // TZ=UTC while it lives (istat prints local time).
     class UtcZone {
       public:

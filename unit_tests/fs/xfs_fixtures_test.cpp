@@ -33,10 +33,7 @@ using fstest::Fixture;
 using fstest::image_path;
 using fstest::read_manifest;
 using fstest::V4;
-using fstest::V4_512;
 using fstest::V5;
-using fstest::V5_1K;
-using fstest::V5_64K;
 
 // The volume ID as a canonical UUID ("" unless it has 16 bytes).
 std::string
@@ -85,7 +82,7 @@ class XfsFixturesTest : public CppUnit::TestFixture {
     // directory's inode that the Manifest records for "/".
     void testDetectedAsXfs()
     {
-        for (const Fixture &f : {V4, V4_512, V5_1K, V5_64K, V5}) {
+        for (const Fixture &f : fstest::ALL_FIXTURES) {
             const std::string v = f.variant;
             const tskval::Manifest manifest = read_manifest(f);
             ImgPtr img = open_image(image_path(f));
@@ -114,7 +111,7 @@ class XfsFixturesTest : public CppUnit::TestFixture {
         CPPUNIT_ASSERT(TSK_FS_TYPE_ISXFS(TSK_FS_TYPE_XFS));
         CPPUNIT_ASSERT(TSK_FS_TYPE_ISXFS(TSK_FS_TYPE_XFS_DETECT));
         CPPUNIT_ASSERT(!TSK_FS_TYPE_ISXFS(TSK_FS_TYPE_EXT4));
-        for (const Fixture &f : {V4, V4_512, V5_1K, V5_64K, V5}) {
+        for (const Fixture &f : fstest::ALL_FIXTURES) {
             const std::string v = f.variant;
             ImgPtr img = open_image(image_path(f));
             FsPtr fs(tsk_fs_open_img(img.get(), 0, type));
@@ -130,7 +127,7 @@ class XfsFixturesTest : public CppUnit::TestFixture {
     // runs from 0 to $OrphanFiles, one past the largest possible inode.
     void testGeometry()
     {
-        for (const Fixture &f : {V4, V4_512, V5_1K, V5_64K, V5}) {
+        for (const Fixture &f : fstest::ALL_FIXTURES) {
             const std::string v = f.variant;
             ImgPtr img = open_image(image_path(f));
             FsPtr fs(tsk_fs_open_img(img.get(), 0, TSK_FS_TYPE_XFS));
@@ -160,7 +157,7 @@ class XfsFixturesTest : public CppUnit::TestFixture {
     // fsstat shows the superblock facts that xfs_info shows.
     void testFsstat()
     {
-        for (const Fixture &f : {V4, V4_512, V5_1K, V5_64K, V5}) {
+        for (const Fixture &f : fstest::ALL_FIXTURES) {
             const std::string v = f.variant;
             ImgPtr img = open_image(image_path(f));
             FsPtr fs(tsk_fs_open_img(img.get(), 0, TSK_FS_TYPE_XFS));
@@ -257,7 +254,7 @@ class XfsFixturesTest : public CppUnit::TestFixture {
     // the Manifest is missing.
     void testWalkStopsAtTheRootDirectory()
     {
-        for (const Fixture &f : {V4, V4_512, V5_1K, V5_64K, V5}) {
+        for (const Fixture &f : fstest::ALL_FIXTURES) {
             const std::string v = f.variant;
             const tskval::Manifest manifest = read_manifest(f);
             const fstest::WalkCheck walk =

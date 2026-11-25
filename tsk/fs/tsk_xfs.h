@@ -154,6 +154,9 @@ typedef struct {
 #define XFS_DINODE_FMT_EXTENTS 2 /* an array of extent records */
 #define XFS_DINODE_FMT_BTREE 3   /* the root of an extent B+tree */
 
+/* di_flags. */
+#define XFS_DIFLAG_REALTIME 0x0001 /* data on the realtime device */
+
 /* di_flags2 (v3 inodes). */
 #define XFS_DIFLAG2_BIGTIME 0x08 /* timestamps are bigtime */
 #define XFS_DIFLAG2_NREXT64 0x10 /* 64-bit data fork extent count */
