@@ -211,6 +211,7 @@ class XfsLinkTest : public CppUnit::TestFixture {
     CPPUNIT_TEST(testLongestTargetWithoutHeaders);
     CPPUNIT_TEST(testLongestInlineTarget);
     CPPUNIT_TEST(testDamagedSymlinkOpensWithoutTarget);
+    CPPUNIT_TEST(testUnreadableTargetFailsLookup);
     CPPUNIT_TEST(testControlCharactersInTarget);
     CPPUNIT_TEST(testReusedFileDropsTarget);
     CPPUNIT_TEST(testSpecialFileTypes);
@@ -442,6 +443,27 @@ class XfsLinkTest : public CppUnit::TestFixture {
             CPPUNIT_ASSERT_EQUAL_MESSAGE(
                 c.name, static_cast<uint32_t>(0), tsk_error_get_errno());
         }
+    }
+
+    // A remote target whose blocks can't be read fails the lookup with a
+    // read error, as ext's does: here its extent is past the end of the
+    // image (block 2000 of a copy cut after 1 MiB).
+    void testUnreadableTargetFailsLookup()
+    {
+        const Link &l = V5_1K_LONG;
+        std::vector<char> image = image_start(fstest::V5_1K);
+        set_extent(image, l, 0, 0, 2000, 1);
+        const OpenedFs o(write_image("unreadable", image), TSK_IMG_TYPE_RAW);
+        tsk_error_reset();
+        const FilePtr file(tsk_fs_file_open_meta(o.fs.get(), nullptr, l.inum));
+        CPPUNIT_ASSERT_MESSAGE("opened", file == nullptr);
+        CPPUNIT_ASSERT_EQUAL_MESSAGE(error_text(),
+            static_cast<uint32_t>(TSK_ERR_FS_READ), tsk_error_get_errno());
+        tsk_error_reset();
+        // The inline symlink next to it still opens.
+        const FilePtr inline_link = open_inode(o.fs.get(), V5_1K_SHORT.inum);
+        CPPUNIT_ASSERT_EQUAL(
+            std::string("small.txt"), target_of(inline_link.get()));
     }
 
     // Control characters in a target are replaced with '^', as in ext's

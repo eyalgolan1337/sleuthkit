@@ -102,7 +102,7 @@ split_inum(const XFS_INFO *xfs, TSK_INUM_T inum, InodeAddr &a)
 
 /* --- Inode allocation: the AG's inode B+tree --- */
 
-enum class Alloc { ALLOCATED, FREE, ERROR };
+enum class Alloc { ALLOCATED, FREE, FAILED };
 
 /*
  * Whether the inode at `a` is allocated, as the inode B+tree of its AG
@@ -129,7 +129,7 @@ inode_allocation(XFS_INFO *xfs, const InodeAddr &a)
             tsk_error_reset();
             tsk_error_set_errno(TSK_ERR_FS_READ);
         }
-        return Alloc::ERROR;
+        return Alloc::FAILED;
     }
     const uint32_t level = tsk_getu32(TSK_BIG_ENDIAN, agi.agi_level);
     uint32_t block = tsk_getu32(TSK_BIG_ENDIAN, agi.agi_root);
@@ -138,7 +138,7 @@ inode_allocation(XFS_INFO *xfs, const InodeAddr &a)
         tsk_getu32(TSK_BIG_ENDIAN, agi.agi_seqno) != a.agno || level == 0 ||
         level > XFS_BTREE_MAXLEVELS || block >= ag_blocks) {
         set_corrupt();
-        return Alloc::ERROR;
+        return Alloc::FAILED;
     }
 
     const bool crc = xfs->version == XFS_SB_VERSION_5;
@@ -149,7 +149,7 @@ inode_allocation(XFS_INFO *xfs, const InodeAddr &a)
     const uint8_t *b = reinterpret_cast<const uint8_t *>(buf.data());
     for (uint32_t want = level - 1;; --want) {
         if (!read_ag_block(xfs, a.agno, block, buf.data())) {
-            return Alloc::ERROR;
+            return Alloc::FAILED;
         }
         const xfs_btree_sblock *h =
             reinterpret_cast<const xfs_btree_sblock *>(b);
@@ -157,12 +157,12 @@ inode_allocation(XFS_INFO *xfs, const InodeAddr &a)
         if (tsk_getu32(TSK_BIG_ENDIAN, h->bb_magic) != magic ||
             tsk_getu16(TSK_BIG_ENDIAN, h->bb_level) != want) {
             set_corrupt();
-            return Alloc::ERROR;
+            return Alloc::FAILED;
         }
         if (want == 0) {
             if (numrecs > space / sizeof(xfs_inobt_rec)) {
                 set_corrupt();
-                return Alloc::ERROR;
+                return Alloc::FAILED;
             }
             const xfs_inobt_rec *recs =
                 reinterpret_cast<const xfs_inobt_rec *>(b + hdr);
@@ -184,7 +184,7 @@ inode_allocation(XFS_INFO *xfs, const InodeAddr &a)
         const size_t maxrecs = space / 8;
         if (numrecs == 0 || numrecs > maxrecs) {
             set_corrupt();
-            return Alloc::ERROR;
+            return Alloc::FAILED;
         }
         const uint8_t *keys = b + hdr;
         const uint8_t *ptrs = keys + maxrecs * 4;
@@ -201,7 +201,7 @@ inode_allocation(XFS_INFO *xfs, const InodeAddr &a)
         block = tsk_getu32(TSK_BIG_ENDIAN, ptrs + 4 * found);
         if (block >= ag_blocks) {
             set_corrupt();
-            return Alloc::ERROR;
+            return Alloc::FAILED;
         }
     }
 }
@@ -275,7 +275,7 @@ xfs_dinode_load(XFS_INFO *xfs, TSK_INUM_T inum, uint8_t *raw)
     const bool in_range = inum >= fs->first_inum && inum <= fs->last_inum - 1 &&
         split_inum(xfs, inum, a);
     const Alloc alloc = in_range ? inode_allocation(xfs, a) : Alloc::FREE;
-    if (alloc == Alloc::ERROR) {
+    if (alloc == Alloc::FAILED) {
         return 1;
     }
     if (alloc == Alloc::FREE) {
@@ -501,14 +501,14 @@ fsblock_addr(
 
 /* --- Symlink targets --- */
 
-enum class Target { READ, NONE, ERROR };
+enum class Target { READ, NONE, FAILED };
 
 /*
  * Reads the `size` bytes of a remote symlink's target into `out`, from the
  * extent records in data fork `d`: the extents map the target from file
  * block 0 without holes, and on v5 each starts with a header saying which
  * piece of the target follows it. NONE if the extents or a header are not
- * that, or hold fewer bytes. ERROR on a short read (TSK_ERR_FS_READ).
+ * that, or hold fewer bytes. FAILED on a short read (TSK_ERR_FS_READ).
  */
 Target
 remote_target(XFS_INFO *xfs, const DinodeView &d, char *out, size_t size)
@@ -541,7 +541,7 @@ remote_target(XFS_INFO *xfs, const DinodeView &d, char *out, size_t size)
                 tsk_error_reset();
                 tsk_error_set_errno(TSK_ERR_FS_READ);
             }
-            return Target::ERROR;
+            return Target::FAILED;
         }
         if (hdr != 0) {
             const xfs_dsymlink_hdr *h =
@@ -595,7 +595,7 @@ load_link(XFS_INFO *xfs, TSK_FS_META *meta)
     }
     if (target != Target::READ) {
         free(link);
-        return target == Target::ERROR ? 1 : 0;
+        return target == Target::FAILED ? 1 : 0;
     }
     link[size] = '\0';
     for (size_t i = 0; link[i] != '\0'; ++i) {

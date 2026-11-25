@@ -65,4 +65,4 @@ MAINTAINERCLEANFILES = Makefile.in
 
 clean-local:
 	-rm -rf xfs xfs.tmp ext-small.img.tmp ext-small.img.tmp.d xfs-sb-*.img \
-	    xfs-inode-*.img xfs-dir-*.img xfs-link-*.img
+	    xfs-inode-*.img xfs-dir-*.img xfs-file-*.img xfs-link-*.img
