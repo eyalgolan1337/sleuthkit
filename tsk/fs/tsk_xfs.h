@@ -340,6 +340,54 @@ typedef struct {
 
 #ifdef __cplusplus
 }
+
+/* --- What the module's files share (xfs.cpp, xfs_meta.cpp, xfs_dent.cpp) --- */
+
+namespace tsk_xfs {
+
+/* Not implemented yet: the TSK error number alone. */
+inline void
+set_unsupported()
+{
+    tsk_error_reset();
+    tsk_error_set_errno(TSK_ERR_FS_UNSUPFUNC);
+}
+
+/* Metadata that is not what its format says: the TSK error number alone. */
+inline void
+set_corrupt()
+{
+    tsk_error_reset();
+    tsk_error_set_errno(TSK_ERR_FS_CORRUPT);
+}
+
+/* The fields of a raw inode (the inode size of the file system, as on disk)
+ * that the module uses, in host order. */
+struct DinodeView {
+    const xfs_dinode *core;
+    uint16_t mode;
+    uint8_t version;
+    uint8_t format;
+    uint16_t flags;
+    uint64_t flags2;     /* 0 before v3 */
+    uint64_t nextents;   /* data fork extent records */
+    const uint8_t *fork; /* the data fork */
+    size_t fork_size;    /* its size in bytes */
+};
+
+/* xfs_meta.cpp */
+DinodeView dinode_view(const XFS_INFO *xfs, const uint8_t *raw);
+uint8_t xfs_inode_lookup(
+    TSK_FS_INFO *fs, TSK_FS_FILE *a_fs_file, TSK_INUM_T inum);
+uint8_t xfs_load_attrs(TSK_FS_FILE *fs_file);
+uint8_t xfs_istat(TSK_FS_INFO *fs, TSK_FS_ISTAT_FLAG_ENUM istat_flags, FILE *h,
+    TSK_INUM_T inum, TSK_DADDR_T numblock, int32_t sec_skew);
+
+/* xfs_dent.cpp */
+TSK_RETVAL_ENUM xfs_dir_open_meta(TSK_FS_INFO *fs, TSK_FS_DIR **a_fs_dir,
+    TSK_INUM_T inum, int recursion_depth);
+
+} // namespace tsk_xfs
 #endif
 
 #endif
