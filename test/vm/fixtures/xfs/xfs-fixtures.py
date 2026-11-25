@@ -95,6 +95,15 @@ SPARSE_SIZE = 8 * SPARSE_UNIT
 SPARSE_CHUNKS = [(2 * SPARSE_UNIT, 1000, 'sparse-a'), (5 * SPARSE_UNIT, 1000, 'sparse-b')]
 SPARSE_HOLES = [(0, 2 * SPARSE_UNIT), (3 * SPARSE_UNIT, 5 * SPARSE_UNIT), (6 * SPARSE_UNIT, SPARSE_SIZE)]
 
+# The fragmented file: FRAGMENT_EXTENTS chunks of data, one every other
+# 64 KiB unit with a hole between, so each chunk is an extent of its own and
+# the extents are too many for the inode: its data fork is an extent B+tree
+# (checked on the built image). On v4-512 the tree's root has more leaves
+# than it can point to, so it has a node level too.
+FRAGMENT_EXTENTS = 300
+FRAGMENT_CHUNK = 100
+FRAGMENT_SIZE = (2 * FRAGMENT_EXTENTS - 1) * SPARSE_UNIT
+
 
 class Fail(Exception):
     pass
@@ -217,6 +226,13 @@ def describe(v):
     nblocks = literal // 16 + 10
     fill(dirs.add(Node('btree', 'dir', 0o755)), per_block(240) * nblocks, 240, 't',
          every=max(1, per_block(240) // 4))
+
+    # Last, so that adding it left the inodes and blocks of everything above
+    # where they were.
+    frag = root.add(Node('fragmented.bin', 'file', 0o644, 1000, 1000))
+    frag.chunks = [(2 * i * SPARSE_UNIT, pattern('fragment-%d' % i, FRAGMENT_CHUNK))
+                   for i in range(FRAGMENT_EXTENTS)]
+    frag.size = FRAGMENT_SIZE
 
     flatten(root)
     return root
@@ -816,6 +832,24 @@ def check_sparse(v, bmaps):
     return '/sparse.bin      holes     blocks %s of 0-%d mapped' % (', '.join(mapped), SPARSE_SIZE // bs - 1)
 
 
+def check_fragmented(v, image, inodes, walked, tmpdir):
+    """fragmented.bin must have an extent B+tree data fork with one extent
+    per chunk. Returns a report line with the tree's levels (the root's level
+    plus 1)."""
+    path = b'/fragmented.bin'
+    d = inodes[path]
+    fmt = int(d['core.format'].split()[0])
+    nextents = int(d['core.nextents'])
+    if fmt != 3 or nextents != FRAGMENT_EXTENTS:
+        raise Fail('%s: %s has data fork format %s and %d extents, not btree and %d' %
+                   (v.name, path.decode(), d['core.format'], nextents, FRAGMENT_EXTENTS))
+    field = ('u3' if v.v5 else 'u') + '.bmbt.level'
+    out = fields(xfs_db(image, [['inode %d' % walked[path][0], 'print ' + field]], tmpdir)[0])
+    if field not in out:
+        raise Fail('%s: xfs_db printed no %s for %s' % (v.name, field, path.decode()))
+    return '%-16s btree     %d extents, %d levels' % (path.decode(), nextents, int(out[field]) + 1)
+
+
 def repair_check(v, image):
     p = run(['xfs_repair', '-n', '-f', image])
     if p.returncode != 0:
@@ -846,6 +880,7 @@ def verify_image(v, image, expected_manifest, tmpdir, read=None):
     report = ['xfs_repair -n: no problems']
     report += check_dir_formats(v, image, inodes, walked, tmpdir)
     report.append(check_sparse(v, bmaps))
+    report.append(check_fragmented(v, image, inodes, walked, tmpdir))
     actual_manifest = os.path.join(tmpdir, v.name + '.read.manifest')
     write_manifest(actual_manifest, actual, [])
     report.append('Manifest read back with xfs_db vs expected Manifest: %s' %

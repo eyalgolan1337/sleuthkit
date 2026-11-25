@@ -75,7 +75,7 @@ A **Strict check** compares TSK's view of a frozen file system with **Ground tru
 - the **Guest-side run**: the harness, statically linked, reads the partition's `/dev/sdN` device inside the Validation VM;
 - the **Host-side run**: the harness of the normal devcontainer build reads partition N of the VM's `.vmdk` on the host, while the VM is running and the file system is frozen.
 
-While XFS support is being built (#11), `/data` and `/data-compat` carry [Known failures](#known-failure-list) that name what libtsk can't do on XFS yet (since #41: libtsk reads XFS inodes, extent-list content and directories of every format, so every entry is found and what is left are per-path Known failures), so the gate shows that the Control file system passes and that each XFS check passes apart from those paths. `/` and `/boot` are in use and can't be frozen; they get [Best-effort checks in gate 4](#gate-4-best-effort-checks).
+While XFS support is being built (#11), `/data` and `/data-compat` carry [Known failures](#known-failure-list) that name what libtsk can't do on XFS yet (since #41: libtsk reads XFS inodes, extent-list content and directories of every format, so every entry is found and what is left are per-path Known failures; since #42 also the content of files whose extent map is a B+tree), so the gate shows that the Control file system passes and that each XFS check passes apart from those paths. `/` and `/boot` are in use and can't be frozen; they get [Best-effort checks in gate 4](#gate-4-best-effort-checks).
 
 **Where it runs.** Only the host can reach the Validation VM, so the work is split:
 
@@ -359,7 +359,7 @@ strict-guest   sda6       *                crtime          the same for every en
 - Blank lines and lines starting with `#` are skipped. A duplicate line or an unknown difference is an error (exit status 2).
 - Every line must belong to a comparison that gates 3 and 4 run; [gate 1 checks this](#gate-1-known-failure-list-check).
 
-The committed list is `test/vm/known-failures.txt`. For `/data` (`sda4`) and `/data-compat` (`sda5`) it records what libtsk's partial XFS support (#11) can't do yet, each line naming the ticket that removes it: the Strict checks don't see the corpus's symlink targets (`/corpus/links/... target`, #43) or the content of its extent B+tree file (`/corpus/fragmented/extents.bin sha256`, #42), `fls` prints the corpus's socket as `s/h` (`/corpus/special/socket type`, as on the Control file system below), `icat` can't read the corpus's extent B+tree file (`/corpus/fragmented/extents.bin sha256`, #42), and `istat` shows no symlink target (`/corpus/links/short-symlink target`, #43). The `fsstat` checks have no Known failure. On the Control file system (`sda6`), it records the libtsk ext4 defects the [Test corpus](#the-test-corpus) exposes, path by path, on both sides: times before 1970 and after 2106 (#30), slow symlinks with no target (#31), and three phantom names in the 50,000-entry directory (#32). The phantom names are bytes of the directory's htree index: name hashes (seeded per file system) and logical block numbers, both the same in every run on this file system. Two runs gave the same three names. `fls` lists the phantom names too, so they are also `extra` for `fls-guest` and `fls-host`. `fls` also prints a socket's metadata type as `h` (`s/h`): `tsk_fs_meta_type_str` has `s` and `h` in the wrong order for `TSK_FS_META_TYPE_ENUM`, an upstream output defect, so `/corpus/special/socket` is a `type` Known failure of both `fls` checks. `/boot` (`sda2`) and `/` (`sda3`) are `* missing` and `* target` for `best-effort-guest` and `best-effort-host`, for the same reasons.
+The committed list is `test/vm/known-failures.txt`. For `/data` (`sda4`) and `/data-compat` (`sda5`) it records what libtsk's partial XFS support (#11) can't do yet, each line naming the ticket that removes it: the Strict checks don't see the corpus's symlink targets (`/corpus/links/... target`, #43), `fls` prints the corpus's socket as `s/h` (`/corpus/special/socket type`, as on the Control file system below), and `istat` shows no symlink target (`/corpus/links/short-symlink target`, #43). The `fsstat` checks have no Known failure. On the Control file system (`sda6`), it records the libtsk ext4 defects the [Test corpus](#the-test-corpus) exposes, path by path, on both sides: times before 1970 and after 2106 (#30), slow symlinks with no target (#31), and three phantom names in the 50,000-entry directory (#32). The phantom names are bytes of the directory's htree index: name hashes (seeded per file system) and logical block numbers, both the same in every run on this file system. Two runs gave the same three names. `fls` lists the phantom names too, so they are also `extra` for `fls-guest` and `fls-host`. `fls` also prints a socket's metadata type as `h` (`s/h`): `tsk_fs_meta_type_str` has `s` and `h` in the wrong order for `TSK_FS_META_TYPE_ENUM`, an upstream output defect, so `/corpus/special/socket` is a `type` Known failure of both `fls` checks. `/boot` (`sda2`) and `/` (`sda3`) are `* missing` and `* target` for `best-effort-guest` and `best-effort-host`, for the same reasons.
 
 ### Volatile path list
 
@@ -602,16 +602,16 @@ Small XFS images, committed in `test/vm/fixtures/xfs/`, that tests can use with 
 
 Every variant also gets `-m uuid=<fixed>` and `-L tsk-<variant>` (`tsk-v4-noft` for `v4-noftype`: a label has at most 12 bytes). "Defaults" are the defaults of the devcontainer's xfsprogs (Debian trixie, 6.13.0): for v5 that is crc, finobt, sparse inodes, rmapbt, reflink, bigtime, inobtcount and nrext64. The full `xfs_info` output is in a comment at the top of each Manifest. `mkfs.xfs` refuses file systems of 300 MB or less, and with 64 KiB blocks it needs 512 MiB for the minimum log size. The images are sparse when decompressed with `xz -d`, so they take little disk space.
 
-Together the twelve files are about 1.7 MB:
+Together the twelve files are about 1.9 MB:
 
 | Variant | `.img.xz` | `.manifest.xz` | Entries |
 | --- | --- | --- | --- |
-| `v4` | 84,200 | 14,956 | 1,006 |
-| `v4-512` | 71,144 | 14,604 | 1,006 |
-| `v4-noftype` | 84,164 | 14,912 | 1,006 |
-| `v5-1k` | 106,924 | 18,332 | 1,181 |
-| `v5-64k` | 982,796 | 226,184 | 18,821 |
-| `v5` | 118,184 | 17,912 | 1,181 |
+| `v4` | 117,020 | 15,032 | 1,007 |
+| `v4-512` | 104,252 | 14,676 | 1,007 |
+| `v4-noftype` | 116,976 | 14,988 | 1,007 |
+| `v5-1k` | 141,020 | 18,392 | 1,182 |
+| `v5-64k` | 1,005,340 | 226,236 | 18,822 |
+| `v5` | 152,376 | 17,984 | 1,182 |
 
 ### What the images contain
 
@@ -626,6 +626,7 @@ Every variant has the same tree, with entry counts scaled to its geometry:
 | `/dirs/btree` | B+tree directory: more extents than fit in the inode (data fork `btree`), made by putting a file with one byte of data between directory blocks |
 | `/empty`, `/small.txt`, `/multiblock.bin` | Regular files of 0 bytes, a few bytes and 3.5 blocks |
 | `/sparse.bin` | 512 KiB file with holes at the start, in the middle and at the end |
+| `/fragmented.bin` | 300 chunks of 100 bytes, one every other 64 KiB with holes between, so 300 extents: more than fit in the inode, so its data fork is an extent B+tree (data fork `btree`); on `v4-512` the tree has a node level (3 levels, 2 elsewhere). Last in the tree, so the inodes and blocks of the entries above don't depend on it |
 | `/setuid`, `/setgid` | Modes 4755 and 2711 |
 | `/xxx…x` | A 255-byte name |
 | `/fifo`, `/chardev`, `/blockdev` | Special files |
@@ -646,7 +647,7 @@ Gate 1 of the validate command runs `verify` on every variant. Run it in the dev
 
 How an image is built:
 
-1. The script generates the tree description of the variant. It writes a protofile (see `mkfs.xfs(8)`, `-p`) with the content of each regular file in a staging directory. The sparse file's holes are holes in the staging file, which `mkfs.xfs` keeps.
+1. The script generates the tree description of the variant. It writes a protofile (see `mkfs.xfs(8)`, `-p`) with the content of each regular file in a staging directory. The holes of the sparse and fragmented files are holes in the staging files, which `mkfs.xfs` keeps.
 2. `mkfs.xfs -p protofile` makes and fills the image in one step.
 3. A protofile can't set timestamps. The script writes atime, mtime, ctime and crtime into each inode's bytes and recomputes the inode's CRC (v5). It finds the inodes with `xfs_db`'s `ls` and `convert`. It doesn't use `xfs_db`'s `write` for this: in 6.13, writing a bigtime timestamp's `sec` field stores the raw 64-bit value, and negative 32-bit values come out wrong.
 4. The expected Manifest comes from the tree description, except for two fields that `mkfs.xfs` chooses: inode numbers and directory sizes, which are read from the image.
@@ -658,6 +659,7 @@ How an image is checked (`build`, `verify` and `check` all do this):
 - The image is read back using `xfs_db` only, with no code shared with the writing side: the tree with `ls`, each inode's fields with `print` (including the timestamps, which `xfs_db` decodes itself, and on v5 that the inode CRC is correct), and file content and remote symlink targets from the blocks listed by `bmap`. The resulting Manifest must equal the expected one under the Strict rules of `compare-manifests`, so every path, type, inode number, mode, uid, gid, size, link count, symlink target, SHA-256, mtime, ctime and crtime is compared (atime is recorded but, as always, not compared). At build time, inode numbers and directory sizes are compared with themselves, because the expected Manifest took them from the image; `check` compares them with the committed Manifest.
 - Each directory under `/dirs` has the format in its name, according to `xfs_db`. Short-form means the data fork is `local`. Block means `extents`, one directory block whose magic is a block directory's (`XD2B` on v4, `XDB3` on v5), and nothing at the leaf offset. Leaf and node mean `extents`, with a leaf1 block or a da-btree node block at the leaf offset (32 GiB). B+tree means the data fork is `btree`. The script prints each directory's format, size and extent count.
 - `/sparse.bin` maps every block that holds data and none in the three holes.
+- `/fragmented.bin`'s data fork is `btree` with 300 extents, one per chunk. The script prints its levels (from the root's `bmbt.level`).
 
 `check` builds every image again in a temporary directory and then also compares the Manifest read back from the new image with the committed one. Regeneration isn't byte-identical (inode generation numbers are random, for example), but the tree, the inode numbers and the timestamps must be identical. The images were built with xfsprogs 6.13.0-2+deb13u1. The Dockerfile doesn't pin that version (Debian drops superseded versions from its archive, which would break the image build). Another xfsprogs version may place inodes differently or change the defaults. `check` then fails, and the images and Manifests must be rebuilt and committed together.
 

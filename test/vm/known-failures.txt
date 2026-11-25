@@ -14,10 +14,8 @@
 # Partitions: the guest's device names (sda2 /boot, sda3 /, sda4 /data,
 # sda5 /data-compat, sda6 /control, the Control file system).
 
-# What later tickets read on /data and /data-compat: symlink targets (#43)
-# and a file whose extent map is a B+tree (#42).
+# What a later ticket reads on /data and /data-compat: symlink targets (#43).
 # check        partition  subject  difference     comment
-strict-guest   sda4       /corpus/fragmented/extents.bin  sha256  /data is XFS: a file whose extent map is a B+tree can't be read yet (#42)
 strict-guest   sda4       /corpus/links/absolute-symlink  target  /data is XFS: symlink targets not read yet (#43)
 strict-guest   sda4       /corpus/links/dangling-symlink  target  /data is XFS: symlink targets not read yet (#43)
 strict-guest   sda4       /corpus/links/dir-symlink       target  /data is XFS: symlink targets not read yet (#43)
@@ -25,7 +23,6 @@ strict-guest   sda4       /corpus/links/long-symlink-300  target  /data is XFS: 
 strict-guest   sda4       /corpus/links/max-symlink-1023  target  /data is XFS: symlink targets not read yet (#43)
 strict-guest   sda4       /corpus/links/relative-symlink  target  /data is XFS: symlink targets not read yet (#43)
 strict-guest   sda4       /corpus/links/short-symlink     target  /data is XFS: symlink targets not read yet (#43)
-strict-guest   sda5       /corpus/fragmented/extents.bin  sha256  /data-compat is XFS: a file whose extent map is a B+tree can't be read yet (#42)
 strict-guest   sda5       /corpus/links/absolute-symlink  target  /data-compat is XFS: symlink targets not read yet (#43)
 strict-guest   sda5       /corpus/links/dangling-symlink  target  /data-compat is XFS: symlink targets not read yet (#43)
 strict-guest   sda5       /corpus/links/dir-symlink       target  /data-compat is XFS: symlink targets not read yet (#43)
@@ -33,7 +30,6 @@ strict-guest   sda5       /corpus/links/long-symlink-300  target  /data-compat i
 strict-guest   sda5       /corpus/links/max-symlink-1023  target  /data-compat is XFS: symlink targets not read yet (#43)
 strict-guest   sda5       /corpus/links/relative-symlink  target  /data-compat is XFS: symlink targets not read yet (#43)
 strict-guest   sda5       /corpus/links/short-symlink     target  /data-compat is XFS: symlink targets not read yet (#43)
-strict-host    sda4       /corpus/fragmented/extents.bin  sha256  /data is XFS: a file whose extent map is a B+tree can't be read yet (#42)
 strict-host    sda4       /corpus/links/absolute-symlink  target  /data is XFS: symlink targets not read yet (#43)
 strict-host    sda4       /corpus/links/dangling-symlink  target  /data is XFS: symlink targets not read yet (#43)
 strict-host    sda4       /corpus/links/dir-symlink       target  /data is XFS: symlink targets not read yet (#43)
@@ -41,7 +37,6 @@ strict-host    sda4       /corpus/links/long-symlink-300  target  /data is XFS: 
 strict-host    sda4       /corpus/links/max-symlink-1023  target  /data is XFS: symlink targets not read yet (#43)
 strict-host    sda4       /corpus/links/relative-symlink  target  /data is XFS: symlink targets not read yet (#43)
 strict-host    sda4       /corpus/links/short-symlink     target  /data is XFS: symlink targets not read yet (#43)
-strict-host    sda5       /corpus/fragmented/extents.bin  sha256  /data-compat is XFS: a file whose extent map is a B+tree can't be read yet (#42)
 strict-host    sda5       /corpus/links/absolute-symlink  target  /data-compat is XFS: symlink targets not read yet (#43)
 strict-host    sda5       /corpus/links/dangling-symlink  target  /data-compat is XFS: symlink targets not read yet (#43)
 strict-host    sda5       /corpus/links/dir-symlink       target  /data-compat is XFS: symlink targets not read yet (#43)
@@ -76,10 +71,6 @@ strict-host    sda6       /corpus/links/max-symlink-1023               target  e
 strict-host    sda6       /corpus/dirs/btree/C                         extra   phantom name from an htree dx_node block parsed as dirents (#32)
 strict-host    sda6       /corpus/dirs/btree/g                         extra   phantom name from an htree dx_node block parsed as dirents (#32)
 strict-host    sda6       /corpus/dirs/btree/%E6                       extra   phantom name from an htree dx_node block parsed as dirents (#32)
-icat-guest     sda4       /corpus/fragmented/extents.bin  sha256  /data is XFS: a file whose extent map is a B+tree can't be read yet (#42)
-icat-guest     sda5       /corpus/fragmented/extents.bin  sha256  /data-compat is XFS: a file whose extent map is a B+tree can't be read yet (#42)
-icat-host      sda4       /corpus/fragmented/extents.bin  sha256  /data is XFS: a file whose extent map is a B+tree can't be read yet (#42)
-icat-host      sda5       /corpus/fragmented/extents.bin  sha256  /data-compat is XFS: a file whose extent map is a B+tree can't be read yet (#42)
 istat-guest    sda4       /corpus/links/short-symlink  target  /data is XFS: symlink targets not read yet (#43)
 istat-guest    sda5       /corpus/links/short-symlink  target  /data-compat is XFS: symlink targets not read yet (#43)
 istat-host     sda4       /corpus/links/short-symlink  target  /data is XFS: symlink targets not read yet (#43)
