@@ -299,8 +299,8 @@ read_dir(const XFS_INFO *xfs, TSK_FS_DIR *fs_dir, TSK_FS_NAME *fs_name)
 /*
  * dir_open_meta: the names of directory `inum`, of any format (short-form,
  * block, leaf, node, B+tree). Deleted names are not recovered, and the root has no
- * $OrphanFiles (orphans need the inode walk, #44); opening $OrphanFiles
- * itself fails with TSK_ERR_FS_UNSUPFUNC.
+ * $OrphanFiles (deleted files are not recovered in #11); opening
+ * $OrphanFiles itself fails with TSK_ERR_FS_UNSUPFUNC.
  */
 TSK_RETVAL_ENUM
 xfs_dir_open_meta(TSK_FS_INFO *fs, TSK_FS_DIR **a_fs_dir, TSK_INUM_T inum, int)

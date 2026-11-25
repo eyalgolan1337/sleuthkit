@@ -9,7 +9,9 @@
 #include <tsk/libtsk.h>
 
 #include <fstream>
+#include <map>
 #include <memory>
+#include <set>
 #include <sstream>
 #include <vector>
 
@@ -214,6 +216,90 @@ check_by_inode(const std::string &image, const tskval::Manifest &expected,
         run.entries.push_back(e);
     }
     return compare(expected, run, compare_opts, log.str());
+}
+
+namespace {
+
+// What check_meta_walk's callback records.
+struct MetaWalkState {
+    std::map<uint64_t, std::vector<const tskval::Entry *>> by_inode;
+    std::set<uint64_t> recorded;
+    std::vector<uint64_t> visited;
+    tskval::Manifest run;
+    std::ostringstream log;
+};
+
+TSK_WALK_RET_ENUM
+record_meta(TSK_FS_FILE *file, void *ptr)
+{
+    MetaWalkState &s = *static_cast<MetaWalkState *>(ptr);
+    const uint64_t inum = file->meta->addr;
+    s.visited.push_back(inum);
+    const auto it = s.by_inode.find(inum);
+    if (it == s.by_inode.end() || !s.recorded.insert(inum).second) {
+        return TSK_WALK_CONT;
+    }
+    for (const tskval::Entry *x : it->second) {
+        tskval::Entry e = tskval::entry_from_meta(x->path, *file->meta);
+        if (e.type == tskval::EntryType::File) {
+            e.has_sha256 = content_sha256(file, file->meta->size, e.sha256);
+            if (!e.has_sha256) {
+                s.log << tskval::encode_bytes(x->path) << ": inode " << inum
+                      << " content can't be read: " << tsk_error_line() << "\n";
+                tsk_error_reset();
+            }
+        }
+        s.run.entries.push_back(e);
+    }
+    return TSK_WALK_CONT;
+}
+
+} // namespace
+
+MetaWalkCheck
+check_meta_walk(const std::string &image, const tskval::Manifest &expected,
+    const std::string &known_failures)
+{
+    MetaWalkCheck check;
+    tskval::CompareOptions compare_opts;
+    std::string error;
+    if (!strict_options(known_failures, compare_opts, error)) {
+        check.report = "malformed Known failure list: " + error + "\n";
+        return check;
+    }
+    const char *paths[] = {image.c_str()};
+    tsk_error_reset();
+    std::unique_ptr<TSK_IMG_INFO, ImgCloser> img(
+        tsk_img_open_utf8(1, paths, TSK_IMG_TYPE_DETECT, 0));
+    if (!img) {
+        check.report =
+            "can't open the image " + image + ": " + tsk_error_line() + "\n";
+        return check;
+    }
+    std::unique_ptr<TSK_FS_INFO, FsCloser> fs(
+        tsk_fs_open_img(img.get(), 0, TSK_FS_TYPE_DETECT));
+    if (!fs) {
+        check.report = "can't open the file system in " + image + ": " +
+            tsk_error_line() + "\n";
+        return check;
+    }
+
+    MetaWalkState state;
+    for (const tskval::Entry &x : expected.entries) {
+        state.by_inode[x.inode].push_back(&x);
+    }
+    tsk_error_reset();
+    if (tsk_fs_meta_walk(fs.get(), fs->first_inum, fs->last_inum,
+            TSK_FS_META_FLAG_ALLOC, record_meta, &state)) {
+        check.report = "the inode walk failed: " + tsk_error_line() + "\n" +
+            state.log.str();
+        check.visited = state.visited;
+        return check;
+    }
+    static_cast<WalkCheck &>(check) =
+        compare(expected, state.run, compare_opts, state.log.str());
+    check.visited = state.visited;
+    return check;
 }
 
 WalkCheck

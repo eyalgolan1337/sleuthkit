@@ -1,7 +1,8 @@
 /*
  * Helpers shared by the fs unit tests: RAII handles for libtsk images, file
- * systems and files, the text of the current TSK error, what a file system's
- * fsstat and istat callbacks print, and the blocks of a file. Public API only. C++14. Test-only.
+ * systems, files and blocks, the text of the current TSK error, what a file
+ * system's fsstat and istat callbacks print, and the blocks of a file. Public
+ * API only. C++14. Test-only.
  */
 #ifndef TSK_UNIT_TESTS_FS_TEST_UTIL_H
 #define TSK_UNIT_TESTS_FS_TEST_UTIL_H
@@ -36,9 +37,17 @@ struct FileCloser {
         tsk_fs_file_close(file);
     }
 };
+// tsk_fs_block_free crashes on NULL; unique_ptr doesn't call it on one.
+struct BlockFreer {
+    void operator()(TSK_FS_BLOCK *block) const
+    {
+        tsk_fs_block_free(block);
+    }
+};
 using ImgPtr = std::unique_ptr<TSK_IMG_INFO, ImgCloser>;
 using FsPtr = std::unique_ptr<TSK_FS_INFO, FsCloser>;
 using FilePtr = std::unique_ptr<TSK_FS_FILE, FileCloser>;
+using BlockPtr = std::unique_ptr<TSK_FS_BLOCK, BlockFreer>;
 
 // The current TSK error's text, or "".
 inline std::string
@@ -74,11 +83,14 @@ printed_text(Print print, bool &ok)
     }
     ok = print(f) == 0;
     std::string text;
-    CPPUNIT_ASSERT_MESSAGE("fseek failed", fseek(f, 0, SEEK_SET) == 0);
+    if (fseek(f, 0, SEEK_SET) != 0) {
+        fclose(f);
+        CPPUNIT_FAIL("fseek failed");
+        return "";
+    }
     char buf[4096];
-    size_t n = 0;
-    while ((n = fread(buf, 1, sizeof(buf), f)) > 0) {
-        text.append(buf, n);
+    while (!feof(f) && !ferror(f)) {
+        text.append(buf, fread(buf, 1, sizeof(buf), f));
     }
     fclose(f);
     return text;

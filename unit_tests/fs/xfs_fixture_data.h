@@ -45,21 +45,32 @@ struct Fixture {
     // Directory entries record the file type (mkfs.xfs -n ftype=1, the
     // default; v5 always).
     bool ftype;
+    // From xfs_db: the allocated inodes that no name refers to, so the
+    // Manifest doesn't have them: the realtime bitmap and summary inodes
+    // (sb_rbmino, sb_rsumino; no quota inodes).
+    uint64_t internal_inodes[2];
+    // From xfs_db: sb_ifree, the free inodes of the allocated inode chunks.
+    // None was ever used (each one's ctime is 0 on disk), and no chunk is
+    // sparse.
+    uint64_t free_inodes;
 };
 
 const Fixture V4 = {"v4", 1007, "5f4b0c1e-0000-4000-8000-000000000004", 4, 4096,
-    81920, 256, 4, 20480, 19, 0x1cffff, 191, "tsk-v4", true};
+    81920, 256, 4, 20480, 19, 0x1cffff, 191, "tsk-v4", true, {129, 130}, 79};
 const Fixture V4_512 = {"v4-512", 1007, "5f4b0c1e-0000-4000-8000-000000000512",
-    4, 512, 655360, 256, 4, 163840, 19, 0x1cffff, 95, "tsk-v4-512", true};
+    4, 512, 655360, 256, 4, 163840, 19, 0x1cffff, 95, "tsk-v4-512", true,
+    {33, 34}, 79};
 const Fixture V4_NOFTYPE = {"v4-noftype", 1007,
     "5f4b0c1e-0000-4000-8000-0000000000f0", 4, 4096, 81920, 256, 4, 20480, 19,
-    0x1cffff, 191, "tsk-v4-noft", false};
+    0x1cffff, 191, "tsk-v4-noft", false, {129, 130}, 79};
 const Fixture V5_1K = {"v5-1k", 1182, "5f4b0c1e-0000-4000-8000-000000001024", 5,
-    1024, 327680, 512, 4, 81920, 18, 0xe7fff, 127, "tsk-v5-1k", true};
+    1024, 327680, 512, 4, 81920, 18, 0xe7fff, 127, "tsk-v5-1k", true, {65, 66},
+    96};
 const Fixture V5_64K = {"v5-64k", 18822, "5f4b0c1e-0000-4000-8000-000000065536",
-    5, 65536, 8192, 512, 4, 2048, 18, 0xfffff, 4671, "tsk-v5-64k", true};
+    5, 65536, 8192, 512, 4, 2048, 18, 0xfffff, 4671, "tsk-v5-64k", true,
+    {1153, 1154}, 120};
 const Fixture V5 = {"v5", 1182, "5f4b0c1e-0000-4000-8000-000000000005", 5, 4096,
-    81920, 512, 4, 20480, 18, 0xe7fff, 191, "tsk-v5", true};
+    81920, 512, 4, 20480, 18, 0xe7fff, 191, "tsk-v5", true, {129, 130}, 96};
 
 const Fixture ALL_FIXTURES[] = {V4, V4_512, V4_NOFTYPE, V5_1K, V5_64K, V5};
 
