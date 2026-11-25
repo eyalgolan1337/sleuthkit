@@ -387,7 +387,6 @@ class XfsDirTest : public CppUnit::TestFixture {
     CPPUNIT_TEST(testFreedDataBlockSkipped);
     CPPUNIT_TEST(testCorruptDataBlocks);
     CPPUNIT_TEST(testCorruptExtentTree);
-    CPPUNIT_TEST(testExtentTreeOfFileNotReadYet);
     CPPUNIT_TEST(testOpenErrors);
     CPPUNIT_TEST(testNamesAsStored);
     CPPUNIT_TEST(testShortformEightByteInodes);
@@ -726,32 +725,6 @@ class XfsDirTest : public CppUnit::TestFixture {
             f, "bmbt-whole", whole_dir_blocks(f, m, "/dirs/btree", blocks));
         OpenedFs o(img.path());
         check_listing(f, o.fs.get(), m, "/dirs/btree", true);
-    }
-
-    // The content of a file whose extent map is a B+tree is not read yet
-    // (#42): /dirs/btree with a regular file's mode fails with
-    // TSK_ERR_FS_UNSUPFUNC when read.
-    void testExtentTreeOfFileNotReadYet()
-    {
-        const Fixture &f = fstest::V4;
-        const tskval::Manifest m = read_manifest(f);
-        const TSK_INUM_T inum = entry_of(m, "/dirs/btree").inode;
-        const uint64_t inode = inode_offset(f, inum);
-        PatchedImage img(f, "bmbt-file", {inode});
-        // di_mode (2 bytes at 2): a regular file, 0644.
-        img.patch(inode + 2, {0x81, 0xa4});
-        OpenedFs o(img.path());
-        fstest::FilePtr file(tsk_fs_file_open_meta(o.fs.get(), nullptr, inum));
-        CPPUNIT_ASSERT_MESSAGE(error_text(), file != nullptr);
-        CPPUNIT_ASSERT_EQUAL(TSK_FS_META_TYPE_REG, file->meta->type);
-        char buf[16];
-        tsk_error_reset();
-        CPPUNIT_ASSERT_EQUAL(ssize_t{-1},
-            tsk_fs_file_read(
-                file.get(), 0, buf, sizeof(buf), TSK_FS_FILE_READ_FLAG_NONE));
-        CPPUNIT_ASSERT_EQUAL_MESSAGE(error_text(),
-            static_cast<uint32_t>(TSK_ERR_FS_UNSUPFUNC), tsk_error_get_errno());
-        tsk_error_reset();
     }
 
     // A number past $OrphanFiles, a file that is not a directory and

@@ -679,12 +679,11 @@ bmbt_records(
 
 /*
  * load_attrs: the default (data) attribute from the data fork of the raw
- * inode in meta->content_ptr. Extent lists are non-resident runs; local
- * data (short-form directories, inline symlinks) is resident; device files
- * have no data. A directory's extent B+tree is read into runs like an extent
- * list. A file's is not read yet (#42), and the extents of a file on the
- * realtime device are not in the image: TSK_ERR_FS_UNSUPFUNC.
- * Extended attributes (the attr fork) are not read.
+ * inode in meta->content_ptr. Extent lists and extent B+trees are
+ * non-resident runs; local data (short-form directories, inline symlinks) is
+ * resident; device files have no data. The extents of a file on the realtime
+ * device are not in the image: TSK_ERR_FS_UNSUPFUNC. Extended attributes
+ * (the attr fork) are not read.
  */
 uint8_t
 xfs_load_attrs(TSK_FS_FILE *fs_file)
@@ -712,6 +711,14 @@ xfs_load_attrs(TSK_FS_FILE *fs_file)
         return 1;
     }
 
+    if ((d.format == XFS_DINODE_FMT_EXTENTS ||
+            d.format == XFS_DINODE_FMT_BTREE) &&
+        (d.flags & XFS_DIFLAG_REALTIME)) {
+        // Its extents are on the realtime device, not in the image.
+        set_unsupported();
+        return 1;
+    }
+
     TSK_FS_ATTR_RUN *runs = NULL;
     TSK_DADDR_T end_blocks = 0;
     std::vector<xfs_bmbt_rec> tree_recs;
@@ -724,11 +731,6 @@ xfs_load_attrs(TSK_FS_FILE *fs_file)
         }
         break;
     case XFS_DINODE_FMT_EXTENTS:
-        if (d.flags & XFS_DIFLAG_REALTIME) {
-            // Its extents are on the realtime device, not in the image.
-            set_unsupported();
-            return 1;
-        }
         if (d.nextents > d.fork_size / sizeof(xfs_bmbt_rec)) {
             return fork_corrupt();
         }
@@ -738,11 +740,6 @@ xfs_load_attrs(TSK_FS_FILE *fs_file)
         }
         break;
     case XFS_DINODE_FMT_BTREE:
-        if (meta->type != TSK_FS_META_TYPE_DIR) {
-            // File content through an extent B+tree comes in #42.
-            set_unsupported();
-            return 1;
-        }
         if (bmbt_records(xfs, d, tree_recs) ||
             extent_runs(xfs, tree_recs.data(), tree_recs.size(), meta->size,
                 runs, end_blocks)) {
