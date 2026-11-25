@@ -12,6 +12,9 @@
  * one failure named after the field. atime is never compared. See
  * test/vm/README.md ("Manifests and the comparison step").
  *
+ * check_by_inode does the same comparison without the directory walk: it
+ * opens each expected entry by its inode number.
+ *
  * C++14. Test-only.
  */
 #ifndef TSK_UNIT_TESTS_FS_MANIFEST_CHECK_H
@@ -54,6 +57,17 @@ WalkCheck check_walk(const std::string &image, const tskval::Manifest &expected,
 WalkCheck check_walk(const std::string &image,
     const std::string &expected_manifest,
     const std::string &known_failures = "");
+
+// Instead of walking, opens each entry of `expected` by its inode number
+// (tsk_fs_file_open_meta on the file system that autodetection finds in
+// `image`), records its metadata as the walk does (the harness's
+// entry_from_meta, keeping the expected path) and the SHA-256 of each regular
+// file's content (tsk_fs_file_read), and compares the result with `expected`
+// in the same way. An entry that doesn't open, or whose content can't be read
+// to the end, is reported and left out (so it is "missing") or left without
+// its SHA-256. Hard links are opened once per path.
+WalkCheck check_by_inode(const std::string &image,
+    const tskval::Manifest &expected, const std::string &known_failures = "");
 
 } // namespace fstest
 
