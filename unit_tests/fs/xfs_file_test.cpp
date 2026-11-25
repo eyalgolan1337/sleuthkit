@@ -9,7 +9,6 @@
 #include "fs_test_util.h"
 #include "xfs_fixture_data.h"
 
-#include "manifest.h"
 #include "sha256.h"
 
 #include <tsk/libtsk.h>
@@ -25,14 +24,12 @@
 namespace {
 
 using fstest::ALL_FIXTURES;
-using fstest::entry_of;
 using fstest::error_text;
 using fstest::Fixture;
 using fstest::FsPtr;
 using fstest::image_path;
 using fstest::ImgPtr;
 using fstest::open_image;
-using fstest::read_manifest;
 
 // /fragmented.bin (xfs-fixtures.py): FRAG_EXTENTS chunks of FRAG_CHUNK
 // bytes, chunk i at 2 * i * FRAG_UNIT, holes between; FRAG_SIZE bytes.
@@ -138,10 +135,12 @@ collect_blocks(TSK_FS_FILE *, TSK_OFF_T off, TSK_DADDR_T, char *, size_t,
 // /fragmented.bin inode 186 (an extent B+tree).
 const size_t V4_BLOCK = 4096;
 const size_t CORE_V2 = 100;
-const size_t DI_SIZE = 56, DI_NEXTENTS = 76, DI_FLAGS = 90;
+const size_t DI_FORMAT = 5, DI_SIZE = 56, DI_NEXTENTS = 76, DI_FLAGS = 90;
+const int FMT_BTREE = 3;        // di_format
+const char DIFLAG_REALTIME = 1; // in the low byte of di_flags
 
 size_t
-v4_inode(TSK_INUM_T inum)
+inode_offset(TSK_INUM_T inum)
 {
     return (inum >> 4) * V4_BLOCK + (inum & 15) * 256;
 }
@@ -319,11 +318,11 @@ class XfsFileTest : public CppUnit::TestFixture {
     void testRealtimeExtentTreeNotRead()
     {
         std::vector<char> image = v4_start();
-        const size_t inode = v4_inode(186);
-        CPPUNIT_ASSERT_EQUAL_MESSAGE("not the B+tree file xfs_db shows", 3,
-            static_cast<int>(image[inode + 5])); // di_format: btree
+        const size_t inode = inode_offset(186);
+        CPPUNIT_ASSERT_EQUAL_MESSAGE("not the B+tree file xfs_db shows",
+            FMT_BTREE, static_cast<int>(image[inode + DI_FORMAT]));
         image[inode + DI_FLAGS + 1] =
-            static_cast<char>(image[inode + DI_FLAGS + 1] | 1);
+            static_cast<char>(image[inode + DI_FLAGS + 1] | DIFLAG_REALTIME);
         OpenedFs o(write_image("realtime-btree", image), TSK_IMG_TYPE_RAW);
         fstest::FilePtr file(tsk_fs_file_open_meta(o.fs.get(), nullptr, 186));
         CPPUNIT_ASSERT_MESSAGE(error_text(), file != nullptr);
@@ -347,10 +346,10 @@ class XfsFileTest : public CppUnit::TestFixture {
         const TSK_OFF_T mb_start = GIB_4 - 2 * V4_BLOCK;
         const size_t mb_size = 14336;
         set_extent(image, 133, 0, mb_start / V4_BLOCK, 13, 4, false);
-        put64(image, v4_inode(133) + DI_SIZE, mb_start + mb_size);
+        put64(image, inode_offset(133) + DI_SIZE, mb_start + mb_size);
         const TSK_OFF_T tib = TSK_OFF_T{1} << 40;
         set_extent(image, 134, 1, tib / V4_BLOCK, 65, 1, false);
-        put64(image, v4_inode(134) + DI_SIZE, tib + 65536);
+        put64(image, inode_offset(134) + DI_SIZE, tib + 65536);
         OpenedFs o(write_image("4gib", image), TSK_IMG_TYPE_RAW);
 
         const std::string mb = pattern("multiblock", mb_size);
@@ -390,31 +389,33 @@ class XfsFileTest : public CppUnit::TestFixture {
 
     // A read that starts or ends inside an unwritten extent returns zeros
     // for that part, at any byte offset. Patched copy: /multiblock.bin's
-    // extent split in two, file blocks 0-1 written (blocks 13-14) and 2-3
-    // unwritten (blocks 15-16, which hold the rest of its data).
+    // extent split in three, file block 0 written (block 13), 1-2 unwritten
+    // (blocks 14-15, which hold its data) and 3 written (block 16).
     void testReadsInsideUnwrittenExtent()
     {
         std::vector<char> image = v4_start();
-        set_extent(image, 133, 0, 0, 13, 2, false);
-        set_extent(image, 133, 1, 2, 15, 2, true);
-        put32(image, v4_inode(133) + DI_NEXTENTS, 2);
+        set_extent(image, 133, 0, 0, 13, 1, false);
+        set_extent(image, 133, 1, 1, 14, 2, true);
+        set_extent(image, 133, 2, 3, 16, 1, false);
+        put32(image, inode_offset(133) + DI_NEXTENTS, 3);
         OpenedFs o(write_image("unwritten-split", image), TSK_IMG_TYPE_RAW);
         fstest::FilePtr file(tsk_fs_file_open_meta(o.fs.get(), nullptr, 133));
         CPPUNIT_ASSERT_MESSAGE(error_text(), file != nullptr);
         const std::string mb = pattern("multiblock", 14336);
         CPPUNIT_ASSERT_MESSAGE("written into unwritten",
-            read_at(file.get(), 4096 + 100, 8192) ==
-                mb.substr(4196, 8192 - 4196) + zeros(4196));
+            read_at(file.get(), 100, 8192) ==
+                mb.substr(100, 4096 - 100) + zeros(8192 - 3996));
         CPPUNIT_ASSERT_MESSAGE(
-            "inside unwritten", read_at(file.get(), 9000, 1000) == zeros(1000));
-        CPPUNIT_ASSERT_MESSAGE("unwritten to the end",
-            read_at(file.get(), 14000, 1000, 336) == zeros(336));
+            "inside unwritten", read_at(file.get(), 5000, 1000) == zeros(1000));
+        CPPUNIT_ASSERT_MESSAGE("unwritten into written",
+            read_at(file.get(), 12288 - 300, 1000) ==
+                zeros(300) + mb.substr(12288, 700));
         CPPUNIT_ASSERT_MESSAGE("whole file",
             read_at(file.get(), 0, 14336) ==
-                mb.substr(0, 8192) + zeros(14336 - 8192));
+                mb.substr(0, 4096) + zeros(8192) + mb.substr(12288));
         const std::vector<TSK_DADDR_T> blocks = fstest::file_blocks(file.get());
         CPPUNIT_ASSERT_MESSAGE(
-            "blocks read", blocks == std::vector<TSK_DADDR_T>({13, 14}));
+            "blocks read", blocks == std::vector<TSK_DADDR_T>({13, 16}));
     }
 
     // Blocks shared by several files (reflinks) read the same in each.
@@ -424,9 +425,9 @@ class XfsFileTest : public CppUnit::TestFixture {
     {
         std::vector<char> image = v4_start();
         set_extent(image, 135, 0, 0, 13, 4, false);
-        put64(image, v4_inode(135) + DI_SIZE, 14336);
+        put64(image, inode_offset(135) + DI_SIZE, 14336);
         set_extent(image, 132, 0, 0, 14, 1, false);
-        put64(image, v4_inode(132) + DI_SIZE, 4096);
+        put64(image, inode_offset(132) + DI_SIZE, 4096);
         OpenedFs o(write_image("shared", image), TSK_IMG_TYPE_RAW);
         const std::string mb = pattern("multiblock", 14336);
         fstest::FilePtr source(tsk_fs_file_open_meta(o.fs.get(), nullptr, 133));
@@ -453,7 +454,7 @@ class XfsFileTest : public CppUnit::TestFixture {
         size_t index, uint64_t startoff, uint64_t fsblock, uint64_t count,
         bool unwritten)
     {
-        const size_t rec = v4_inode(inum) + CORE_V2 + 16 * index;
+        const size_t rec = inode_offset(inum) + CORE_V2 + 16 * index;
         put64(image, rec,
             (uint64_t{unwritten} << 63) | (startoff << 9) | (fsblock >> 43));
         put64(image, rec + 8, (fsblock << 21) | count);
