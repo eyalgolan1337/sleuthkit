@@ -180,6 +180,10 @@ parse_block(const XFS_INFO *xfs, TSK_FS_DIR *fs_dir, TSK_FS_NAME *fs_name,
             pos += len;
             continue;
         }
+        // An entry: the inode number and the name length come first.
+        if (end - pos < XFS_DIR2_DATA_ENTRY_NAME) {
+            return dir_corrupt();
+        }
         const size_t namelen = buf[pos + XFS_DIR2_DATA_ENTRY_NAME - 1];
         // Inode number, name length, name, file type, 2-byte tag; aligned.
         const size_t size = (XFS_DIR2_DATA_ENTRY_NAME + namelen + ftype_size +

@@ -18,6 +18,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <new>
 #include <vector>
 
 // The on-disk structures must match the disk layout.
@@ -590,6 +591,10 @@ bmbt_subtree(BmbtWalk &walk, uint64_t fsblock, unsigned level)
     // The long-form header starts like the short-form one.
     const xfs_btree_sblock *h = reinterpret_cast<const xfs_btree_sblock *>(b);
     const size_t numrecs = tsk_getu16(TSK_BIG_ENDIAN, h->bb_numrecs);
+    // A node's key and pointer take the room of a leaf's record, so both
+    // kinds of block hold the same number.
+    static_assert(
+        XFS_BMBT_KEY_SIZE + XFS_BMBT_PTR_SIZE == sizeof(xfs_bmbt_rec), "");
     const size_t maxrecs = (buf.size() - hdr) / sizeof(xfs_bmbt_rec);
     if (tsk_getu32(TSK_BIG_ENDIAN, h->bb_magic) !=
             (crc ? XFS_BMAP_CRC_MAGIC : XFS_BMAP_MAGIC) ||
@@ -627,7 +632,8 @@ bmbt_subtree(BmbtWalk &walk, uint64_t fsblock, unsigned level)
  * Reads the extent records of the B+tree rooted in data fork `d` into
  * `recs`, in file order. Errors: those of bmbt_subtree; a root that doesn't
  * fit the fork, with no records or of an impossible level, or a tree with
- * fewer records than the inode says (TSK_ERR_FS_INODE_COR).
+ * fewer records than the inode says (TSK_ERR_FS_INODE_COR); no memory
+ * (TSK_ERR_AUX_MALLOC).
  */
 uint8_t
 bmbt_records(
@@ -644,21 +650,29 @@ bmbt_records(
         numrecs > maxrecs) {
         return fork_corrupt();
     }
-    BmbtWalk walk{xfs, d.nextents, 0, {}};
-    const uint8_t *ptrs =
-        d.fork + XFS_BMDR_HDR_LEN + maxrecs * XFS_BMBT_KEY_SIZE;
-    for (size_t i = 0; i < numrecs; ++i) {
-        if (bmbt_subtree(walk,
-                tsk_getu64(TSK_BIG_ENDIAN, ptrs + i * XFS_BMBT_PTR_SIZE),
-                level - 1)) {
-            return 1;
+    try {
+        BmbtWalk walk{xfs, d.nextents, 0, {}};
+        const uint8_t *ptrs =
+            d.fork + XFS_BMDR_HDR_LEN + maxrecs * XFS_BMBT_KEY_SIZE;
+        for (size_t i = 0; i < numrecs; ++i) {
+            if (bmbt_subtree(walk,
+                    tsk_getu64(TSK_BIG_ENDIAN, ptrs + i * XFS_BMBT_PTR_SIZE),
+                    level - 1)) {
+                return 1;
+            }
         }
+        if (walk.recs.size() != d.nextents) {
+            return fork_corrupt();
+        }
+        recs.swap(walk.recs);
+        return 0;
     }
-    if (walk.recs.size() != d.nextents) {
-        return fork_corrupt();
+    catch (const std::bad_alloc &) {
+        // The walk's buffers and records: no exception reaches a C caller.
+        tsk_error_reset();
+        tsk_error_set_errno(TSK_ERR_AUX_MALLOC);
+        return 1;
     }
-    recs.swap(walk.recs);
-    return 0;
 }
 
 } // namespace
@@ -706,9 +720,7 @@ xfs_load_attrs(TSK_FS_FILE *fs_file)
         break;
     case XFS_DINODE_FMT_LOCAL:
         if ((uint64_t)meta->size > d.fork_size) {
-            tsk_error_reset();
-            tsk_error_set_errno(TSK_ERR_FS_INODE_COR);
-            return 1;
+            return fork_corrupt();
         }
         break;
     case XFS_DINODE_FMT_EXTENTS:

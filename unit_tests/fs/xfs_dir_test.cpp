@@ -626,16 +626,23 @@ class XfsDirTest : public CppUnit::TestFixture {
         const uint64_t block = fsblock_offset(
             f, ((get_be(rec, 0, 8) & 0x1ff) << 43) | (get_be(rec, 8, 8) >> 21));
         const auto check = [&, f](const std::string &name, uint64_t off,
-                               const std::vector<uint8_t> &bytes) {
+                               const std::vector<uint8_t> &bytes,
+                               uint64_t off2 = 0,
+                               const std::vector<uint8_t> &bytes2 = {}) {
             PatchedImage img(
                 f, std::string("data-").append(name), {inode, block});
             img.patch(off, bytes);
+            img.patch(off2 != 0 ? off2 : off, off2 != 0 ? bytes2 : bytes);
             OpenedFs o(img.path());
             check_open_fails(o.fs.get(), inum, TSK_ERR_FS_CORRUPT, name);
         };
         check("block-magic", block, {'X', 'D', '2', 'B'});
         check("magic", block, {'X', 'D', '2', 'F'});
         check("free-long", block + 16, {0xff, 0xff, 0x10, 0x08});
+        // An unused region up to the last 8 bytes, which are too few for
+        // an entry (the name length would be past the block).
+        check("short-entry", block + 16, {0xff, 0xff, 0x0f, 0xe8},
+            block + f.block_size - 8, {0, 0, 0, 0, 0, 0, 0, 1});
         // di_size (8 bytes at 56): 4 KiB and a half.
         check("size", inode + 56, {0, 0, 0, 0, 0, 0, 0x18, 0});
     }
