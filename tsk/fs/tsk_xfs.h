@@ -266,6 +266,61 @@ typedef struct {
     uint8_t ir_free[8];
 } xfs_inobt_rec;
 
+/* --- Directories (xfs_da_format.h) --- */
+
+#define XFS_MAXNAMELEN 255
+
+/* File types of directory entries (with ftype). */
+#define XFS_DIR3_FT_UNKNOWN 0
+#define XFS_DIR3_FT_REG_FILE 1
+#define XFS_DIR3_FT_DIR 2
+#define XFS_DIR3_FT_CHRDEV 3
+#define XFS_DIR3_FT_BLKDEV 4
+#define XFS_DIR3_FT_FIFO 5
+#define XFS_DIR3_FT_SOCK 6
+#define XFS_DIR3_FT_SYMLINK 7
+#define XFS_DIR3_FT_WHT 8
+
+/* A short-form directory (data fork local): a header of the entry count,
+ * the count of entries with 8-byte inode numbers and the parent's inode
+ * number, then the entries: name length, offset (2 bytes), the name, the
+ * file type (with ftype) and the inode number. Inode numbers are 8 bytes
+ * if i8count is not 0, else 4. "." and ".." are not stored. */
+#define XFS_DIR2_SF_COUNT 0
+#define XFS_DIR2_SF_I8COUNT 1
+#define XFS_DIR2_SF_PARENT 2
+#define XFS_DIR2_SF_ENTRY_NAME 3 /* namelen and offset come first */
+#define XFS_INO32_SIZE 4
+#define XFS_INO64_SIZE 8
+#define XFS_MAXINUMBER ((1ULL << 56) - 1)
+
+/* Directory block magics: a block directory's single block, and a data
+ * block of a leaf or node directory. */
+#define XFS_DIR2_BLOCK_MAGIC 0x58443242 /* "XD2B" */
+#define XFS_DIR3_BLOCK_MAGIC 0x58444233 /* "XDB3" */
+#define XFS_DIR2_DATA_MAGIC 0x58443244  /* "XD2D" */
+#define XFS_DIR3_DATA_MAGIC 0x58444433  /* "XDD3" */
+
+/* The header of a directory data or block block: the magic and three free
+ * space records on v4; on v5 the CRC header, the records and padding. */
+#define XFS_DIR2_DATA_HDR_SIZE 16
+#define XFS_DIR3_DATA_HDR_SIZE 64
+
+/* In a data area: an unused region starts with this tag and its length
+ * (2 bytes each); an entry is the inode number (8 bytes), the name length,
+ * the name, the file type (with ftype) and a 2-byte tag, padded to 8. */
+#define XFS_DIR2_DATA_FREE_TAG 0xffff
+#define XFS_DIR2_DATA_ALIGN 8
+#define XFS_DIR2_DATA_ENTRY_NAME 9
+
+/* The end of a block directory's block: leaf entries (hash and address, 8
+ * bytes each), then the tail. */
+#define XFS_DIR2_LEAF_ENTRY_SIZE 8
+typedef struct {
+    uint8_t count[4]; /* leaf entries */
+    uint8_t stale[4]; /* of them, unused */
+} xfs_dir2_block_tail;
+
 /* The file system handle. */
 typedef struct {
     TSK_FS_INFO fs_info; /* must be first */
@@ -279,6 +334,8 @@ typedef struct {
     uint16_t inodesize; /* inode size in bytes */
     uint8_t agblklog;   /* bits of the AG block number in an fsblock */
     uint8_t inopblog;   /* bits of the inode-in-block number */
+    uint32_t dirblksize; /* directory block size in bytes */
+    uint8_t has_ftype;   /* 1: directory entries record the file type */
 } XFS_INFO;
 
 #ifdef __cplusplus

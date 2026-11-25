@@ -28,6 +28,7 @@
 namespace {
 
 using fstest::ALL_FIXTURES;
+using fstest::entry_of;
 using fstest::error_text;
 using fstest::Fixture;
 using fstest::FsPtr;
@@ -35,34 +36,6 @@ using fstest::image_path;
 using fstest::ImgPtr;
 using fstest::open_image;
 using fstest::read_manifest;
-
-// Differences that later tickets of #11 remove.
-const char LATER[] = "/symlink-short target symlink targets come in #43\n"
-                     "/symlink-long target symlink targets come in #43\n";
-
-// The harness records a crtime of 0 as no crtime (libtsk has no other way to
-// say there is none), so a v5 inode created at the epoch differs (#50).
-const char CRTIME_0[] = "/times/epoch crtime crtime 0 reads as none (#50)\n";
-
-// The differences a Fixture's comparison tolerates.
-std::string
-known_failures(const Fixture &f)
-{
-    return std::string(LATER) + (f.version == 5 ? CRTIME_0 : "");
-}
-
-// The Manifest's entry for `path`.
-const tskval::Entry &
-entry_of(const tskval::Manifest &m, const std::string &path)
-{
-    for (const tskval::Entry &e : m.entries) {
-        if (e.path == path) {
-            return e;
-        }
-    }
-    CPPUNIT_FAIL("the Manifest has no " + path);
-    return m.entries.front();
-}
 
 // The inode number of `path` in the Manifest.
 uint64_t
@@ -147,8 +120,9 @@ class XfsInodeTest : public CppUnit::TestFixture {
     {
         for (const Fixture &f : ALL_FIXTURES) {
             const std::string v = f.variant;
-            const fstest::WalkCheck check = fstest::check_by_inode(
-                image_path(f), read_manifest(f), known_failures(f));
+            const fstest::WalkCheck check =
+                fstest::check_by_inode(image_path(f), read_manifest(f),
+                    fstest::inode_known_failures(f));
             CPPUNIT_ASSERT_MESSAGE(v + ": " + check.report, check.passed);
         }
     }

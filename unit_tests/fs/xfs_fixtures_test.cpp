@@ -73,7 +73,7 @@ class XfsFixturesTest : public CppUnit::TestFixture {
     CPPUNIT_TEST(testGeometry);
     CPPUNIT_TEST(testFsstat);
     CPPUNIT_TEST(testLaterStepsFailWithTskErrors);
-    CPPUNIT_TEST(testWalkStopsAtTheRootDirectory);
+    CPPUNIT_TEST(testWalkMatchesManifest);
     CPPUNIT_TEST_SUITE_END();
 
   public:
@@ -171,7 +171,7 @@ class XfsFixturesTest : public CppUnit::TestFixture {
                     msg, want, fsstat_value(text, key));
             };
             expect("File System Type", "XFS");
-            expect("Volume Name", "tsk-" + v);
+            expect("Volume Name", f.label);
             expect("Volume ID", f.uuid);
             expect("Version", std::to_string(f.version));
             expect("Block Size", std::to_string(f.block_size));
@@ -188,11 +188,15 @@ class XfsFixturesTest : public CppUnit::TestFixture {
             expect("Root Inode", std::to_string(fs->root_inum));
             expect("Inode max persentage", "25");
             // xfs_db version: the sb_versionnum flags, then sb_features2
-            // (v4 0x28a, v5 0x18a).
+            // (v4 0x28a, v4 without ftype 0x8a, v5 0x18a).
             const std::string flags =
                 "nlink, align, logv2, extflg, dirv2, morebits, lazy-count, "
-                "attr2, projid32bit, ";
-            expect("Flags", flags + (f.version == 5 ? "crc" : "ftype"));
+                "attr2, projid32bit";
+            expect("Flags",
+                flags +
+                    (f.version == 5   ? ", crc"
+                            : f.ftype ? ", ftype"
+                                      : ""));
             if (f.version == 5) {
                 // xfs_info: finobt=1 rmapbt=1 reflink=1 inobtcount=1;
                 // ftype=1 sparse=1 bigtime=1 nrext64=1.
@@ -208,7 +212,7 @@ class XfsFixturesTest : public CppUnit::TestFixture {
     }
 
     // What later steps of #11 implement fails with a TSK error, not a crash:
-    // directories (#40), the inode and block walks (#44).
+    // the inode and block walks (#44).
     void testLaterStepsFailWithTskErrors()
     {
         for (const Fixture &f : {V4, V5}) {
@@ -225,15 +229,6 @@ class XfsFixturesTest : public CppUnit::TestFixture {
             };
 
             tsk_error_reset();
-            TSK_FS_DIR *dir = tsk_fs_dir_open_meta(fs.get(), fs->root_inum);
-            CPPUNIT_ASSERT_MESSAGE(v + ": directory open", dir == nullptr);
-            failed("directory open");
-
-            CPPUNIT_ASSERT_EQUAL_MESSAGE(v + ": directory walk", 1,
-                static_cast<int>(tsk_fs_dir_walk(fs.get(), fs->root_inum,
-                    TSK_FS_DIR_WALK_FLAG_RECURSE, ignore_name, nullptr)));
-            failed("directory walk");
-
             CPPUNIT_ASSERT_EQUAL_MESSAGE(v + ": inode walk", 1,
                 static_cast<int>(
                     tsk_fs_meta_walk(fs.get(), fs->first_inum, fs->last_inum,
@@ -248,33 +243,25 @@ class XfsFixturesTest : public CppUnit::TestFixture {
         }
     }
 
-    // The validate command's walk of each image opens the file system and
-    // the root directory's inode, which matches the Manifest's "/", and stops
-    // at the root's entries (#40 reads directories): every other entry of
-    // the Manifest is missing.
-    void testWalkStopsAtTheRootDirectory()
+    // The validate command's walk of each image (the harness's, through
+    // short-form and block directories) matches the Manifest, except for
+    // what later tickets read: the entries below leaf, node and B+tree
+    // directories (#41), each one listed, and inode fields of #43 and #50.
+    void testWalkMatchesManifest()
     {
         for (const Fixture &f : fstest::ALL_FIXTURES) {
             const std::string v = f.variant;
             const tskval::Manifest manifest = read_manifest(f);
-            const fstest::WalkCheck walk =
-                fstest::check_walk(image_path(f), manifest);
-            CPPUNIT_ASSERT_MESSAGE(v + ": " + walk.report, !walk.passed);
-            const fstest::WalkCheck tolerated =
-                fstest::check_walk(image_path(f), manifest,
-                    "* missing XFS directories come in #40\n");
+            const std::string missing = fstest::larger_dirs_missing(manifest);
             CPPUNIT_ASSERT_MESSAGE(
-                v + ": " + tolerated.report, tolerated.passed);
-            CPPUNIT_ASSERT_EQUAL_MESSAGE(v + ": entries walked", size_t{1},
-                tolerated.result.run_entries);
+                v + ": nothing below the larger formats", !missing.empty());
+            const fstest::WalkCheck walk = fstest::check_walk(image_path(f),
+                manifest, fstest::inode_known_failures(f) + missing);
+            CPPUNIT_ASSERT_MESSAGE(v + ": " + walk.report, walk.passed);
         }
     }
 
   private:
-    static TSK_WALK_RET_ENUM ignore_name(TSK_FS_FILE *, const char *, void *)
-    {
-        return TSK_WALK_CONT;
-    }
     static TSK_WALK_RET_ENUM ignore_meta(TSK_FS_FILE *, void *)
     {
         return TSK_WALK_CONT;

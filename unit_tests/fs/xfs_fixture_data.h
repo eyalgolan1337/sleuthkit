@@ -41,20 +41,27 @@ struct Fixture {
     // From xfs_db: a free inode in an allocated inode chunk of AG 0 (its bit
     // is set in ir_free of AG 0's inode B+tree record; its mode is 0).
     uint64_t free_inode;
+    const char *label; // -L
+    // Directory entries record the file type (mkfs.xfs -n ftype=1, the
+    // default; v5 always).
+    bool ftype;
 };
 
 const Fixture V4 = {"v4", 1006, "5f4b0c1e-0000-4000-8000-000000000004", 4, 4096,
-    81920, 256, 4, 20480, 19, 0x1cffff, 191};
+    81920, 256, 4, 20480, 19, 0x1cffff, 191, "tsk-v4", true};
 const Fixture V4_512 = {"v4-512", 1006, "5f4b0c1e-0000-4000-8000-000000000512",
-    4, 512, 655360, 256, 4, 163840, 19, 0x1cffff, 95};
+    4, 512, 655360, 256, 4, 163840, 19, 0x1cffff, 95, "tsk-v4-512", true};
+const Fixture V4_NOFTYPE = {"v4-noftype", 1006,
+    "5f4b0c1e-0000-4000-8000-0000000000f0", 4, 4096, 81920, 256, 4, 20480, 19,
+    0x1cffff, 191, "tsk-v4-noft", false};
 const Fixture V5_1K = {"v5-1k", 1181, "5f4b0c1e-0000-4000-8000-000000001024", 5,
-    1024, 327680, 512, 4, 81920, 18, 0xe7fff, 127};
+    1024, 327680, 512, 4, 81920, 18, 0xe7fff, 127, "tsk-v5-1k", true};
 const Fixture V5_64K = {"v5-64k", 18821, "5f4b0c1e-0000-4000-8000-000000065536",
-    5, 65536, 8192, 512, 4, 2048, 18, 0xfffff, 4671};
+    5, 65536, 8192, 512, 4, 2048, 18, 0xfffff, 4671, "tsk-v5-64k", true};
 const Fixture V5 = {"v5", 1181, "5f4b0c1e-0000-4000-8000-000000000005", 5, 4096,
-    81920, 512, 4, 20480, 18, 0xe7fff, 191};
+    81920, 512, 4, 20480, 18, 0xe7fff, 191, "tsk-v5", true};
 
-const Fixture ALL_FIXTURES[] = {V4, V4_512, V5_1K, V5_64K, V5};
+const Fixture ALL_FIXTURES[] = {V4, V4_512, V4_NOFTYPE, V5_1K, V5_64K, V5};
 
 inline std::string
 image_path(const Fixture &f)
@@ -79,6 +86,66 @@ read_manifest(const Fixture &f)
     CPPUNIT_ASSERT_EQUAL_MESSAGE(
         path + ": Manifest entries", f.entries, manifest.entries.size());
     return manifest;
+}
+
+// The differences from a Fixture's Manifest that its comparison tolerates,
+// in check_walk's Known failure format: symlink targets are not read yet
+// (#43), and the harness records a crtime of 0 as no crtime (libtsk has no
+// other way to say there is none), so a v5 inode created at the epoch
+// differs (#50).
+inline std::string
+inode_known_failures(const Fixture &f)
+{
+    std::string out = "/symlink-short target symlink targets come in #43\n"
+                      "/symlink-long target symlink targets come in #43\n";
+    if (f.version == 5) {
+        out += "/times/epoch crtime crtime 0 reads as none (#50)\n";
+    }
+    return out;
+}
+
+// The Manifest's entry for `path`; asserts that there is one.
+inline const tskval::Entry &
+entry_of(const tskval::Manifest &m, const std::string &path)
+{
+    for (const tskval::Entry &e : m.entries) {
+        if (e.path == path) {
+            return e;
+        }
+    }
+    CPPUNIT_FAIL("the Manifest has no " + path);
+    return m.entries.front();
+}
+
+// The directories of the larger formats, which are not listed yet (#41).
+const char *const LARGER_DIRS[] = {"/dirs/leaf", "/dirs/node", "/dirs/btree"};
+
+// Whether `path` is below a directory of LARGER_DIRS.
+inline bool
+below_larger_dir(const std::string &path)
+{
+    for (const char *dir : LARGER_DIRS) {
+        const std::string prefix = std::string(dir) + "/";
+        if (path.compare(0, prefix.size(), prefix) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// One "missing" Known failure for each entry of `m` below a directory of
+// LARGER_DIRS: a walk can't reach them yet (#41).
+inline std::string
+larger_dirs_missing(const tskval::Manifest &m)
+{
+    std::string out;
+    for (const tskval::Entry &e : m.entries) {
+        if (below_larger_dir(e.path)) {
+            out += tskval::encode_bytes(e.path) +
+                " missing leaf, node and B+tree directories come in #41\n";
+        }
+    }
+    return out;
 }
 
 } // namespace fstest
