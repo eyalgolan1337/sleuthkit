@@ -75,7 +75,7 @@ A **Strict check** compares TSK's view of a frozen file system with **Ground tru
 - the **Guest-side run**: the harness, statically linked, reads the partition's `/dev/sdN` device inside the Validation VM;
 - the **Host-side run**: the harness of the normal devcontainer build reads partition N of the VM's `.vmdk` on the host, while the VM is running and the file system is frozen.
 
-While XFS support is being built (#11), `/data` and `/data-compat` carry [Known failures](#known-failure-list) that name what libtsk can't do on XFS yet (since #39: libtsk reads XFS inodes and extent-list content, so the `fsstat`, `icat` and `istat` checks pass apart from per-path Known failures, but the walk stops at the root directory, with every other entry `missing`, until #40), so the gate shows that the Control file system passes, the XFS `fsstat`, `icat` and `istat` checks pass, and every other XFS check fails the expected way. `/` and `/boot` are in use and can't be frozen; they get [Best-effort checks in gate 4](#gate-4-best-effort-checks).
+While XFS support is being built (#11), `/data` and `/data-compat` carry [Known failures](#known-failure-list) that name what libtsk can't do on XFS yet (since #40: libtsk reads XFS inodes, extent-list content and short-form and block directories, so the `fsstat`, `icat` and `istat` checks pass apart from per-path Known failures, but the walk and `fls` leave out every entry below a leaf, node or B+tree directory, `missing`, until #41), so the gate shows that the Control file system passes, the XFS `fsstat`, `icat` and `istat` checks pass, and every other XFS check fails the expected way. `/` and `/boot` are in use and can't be frozen; they get [Best-effort checks in gate 4](#gate-4-best-effort-checks).
 
 **Where it runs.** Only the host can reach the Validation VM, so the work is split:
 
@@ -160,7 +160,7 @@ build/vm-tools/check-tool fls|icat|fsstat|istat --ground-truth-dir DIR --run-dir
 
 A **Best-effort check** compares TSK's view of a file system that is in use with **Ground truth**, with no freeze and no cache flush, so it reflects what TSK sees on a running machine: metadata still only in the log, stale cache pages (#9), files changing during the read. Gate 4 runs one per file system that can't be frozen: `/boot` (`sda2`, XFS) and `/` (`sda3`, XFS). Each has a Guest-side run on `/dev/sdN` and a Host-side run on partition N of the `.vmdk`, like the Strict checks, reported as separate checks.
 
-While XFS support is being built (#11), both are [Known failures](#known-failure-list) on both sides, so in practice the gate shows that the sequence ran and that each run failed the expected way. Since #38 libtsk recognises both as XFS; since #39 each run reads the root inode and stops at the root directory, with every other entry `missing`, until directories land (#40). Before #38, libtsk worded its "not recognised" error differently for the two (`Possible encryption detected (High entropy ...)` for `/boot`, from the entropy test run when no file system type is recognised).
+While XFS support is being built (#11), both are [Known failures](#known-failure-list) on both sides, so in practice the gate shows that the sequence ran and that each run failed the expected way. Since #38 libtsk recognises both as XFS; since #40 each run lists short-form and block directories, so what it leaves out is every entry below a leaf, node or B+tree directory (`* missing`, #41) and every symlink target (`* target`, #43). Before #38, libtsk worded its "not recognised" error differently for the two (`Possible encryption detected (High entropy ...)` for `/boot`, from the entropy test run when no file system type is recognised).
 
 **The sequence**, per file system, run by `collect-vm.sh` on the host before the Strict checks, so the guest's caches are as normal use leaves them (the Strict checks drop them):
 
@@ -359,7 +359,7 @@ strict-guest   sda6       *                crtime          the same for every en
 - Blank lines and lines starting with `#` are skipped. A duplicate line or an unknown difference is an error (exit status 2).
 - Every line must belong to a comparison that gates 3 and 4 run; [gate 1 checks this](#gate-1-known-failure-list-check).
 
-The committed list is `test/vm/known-failures.txt`. For `/data` (`sda4`) and `/data-compat` (`sda5`) it records what libtsk's partial XFS support (#11) can't do yet, each line naming the ticket that removes it: the harness's walk stops at the root directory (`* missing` for `strict-guest` and `strict-host`, #40), `fls` fails as a whole (`* error:tool-failed`, #40), `icat` can't read the corpus's extent B+tree file (`/corpus/fragmented/extents.bin sha256`, #42), and `istat` shows no symlink target (`/corpus/links/short-symlink target`, #43). The `fsstat` checks have no Known failure. On the Control file system (`sda6`), it records the libtsk ext4 defects the [Test corpus](#the-test-corpus) exposes, path by path, on both sides: times before 1970 and after 2106 (#30), slow symlinks with no target (#31), and three phantom names in the 50,000-entry directory (#32). The phantom names are bytes of the directory's htree index: name hashes (seeded per file system) and logical block numbers, both the same in every run on this file system. Two runs gave the same three names. `fls` lists the phantom names too, so they are also `extra` for `fls-guest` and `fls-host`. `fls` also prints a socket's metadata type as `h` (`s/h`): `tsk_fs_meta_type_str` has `s` and `h` in the wrong order for `TSK_FS_META_TYPE_ENUM`, an upstream output defect, so `/corpus/special/socket` is a `type` Known failure of both `fls` checks. `/boot` (`sda2`) and `/` (`sda3`) are `* missing` for `best-effort-guest` and `best-effort-host`, for the same reason.
+The committed list is `test/vm/known-failures.txt`. For `/data` (`sda4`) and `/data-compat` (`sda5`) it records what libtsk's partial XFS support (#11) can't do yet, each line naming the ticket that removes it: the harness's walk and `fls` leave out the entries below leaf, node and B+tree directories (`* missing` for `strict-guest`, `strict-host`, `fls-guest` and `fls-host`, #41; the list can't name a subtree, so the subject is `*`, #52), the Strict checks don't see the corpus's symlink targets (`/corpus/links/... target`, #43) or the content of its extent B+tree file (`/corpus/fragmented/extents.bin sha256`, #42), `fls` prints the corpus's socket as `s/h` (`/corpus/special/socket type`, as on the Control file system below), `icat` can't read the corpus's extent B+tree file (`/corpus/fragmented/extents.bin sha256`, #42), and `istat` shows no symlink target (`/corpus/links/short-symlink target`, #43). The `fsstat` checks have no Known failure. On the Control file system (`sda6`), it records the libtsk ext4 defects the [Test corpus](#the-test-corpus) exposes, path by path, on both sides: times before 1970 and after 2106 (#30), slow symlinks with no target (#31), and three phantom names in the 50,000-entry directory (#32). The phantom names are bytes of the directory's htree index: name hashes (seeded per file system) and logical block numbers, both the same in every run on this file system. Two runs gave the same three names. `fls` lists the phantom names too, so they are also `extra` for `fls-guest` and `fls-host`. `fls` also prints a socket's metadata type as `h` (`s/h`): `tsk_fs_meta_type_str` has `s` and `h` in the wrong order for `TSK_FS_META_TYPE_ENUM`, an upstream output defect, so `/corpus/special/socket` is a `type` Known failure of both `fls` checks. `/boot` (`sda2`) and `/` (`sda3`) are `* missing` and `* target` for `best-effort-guest` and `best-effort-host`, for the same reasons.
 
 ### Volatile path list
 
@@ -595,18 +595,20 @@ Small XFS images, committed in `test/vm/fixtures/xfs/`, that tests can use with 
 | --- | --- | --- | --- | --- | --- | --- |
 | `v4` | `-m crc=0` | 320 MiB | 4096 | 4096 | 256 | v4 |
 | `v4-512` | `-m crc=0 -b size=512` | 320 MiB | 512 | 4096 | 256 | v4 |
+| `v4-noftype` | `-m crc=0 -n ftype=0` | 320 MiB | 4096 | 4096 | 256 | v4, no file type in directory entries |
 | `v5-1k` | `-b size=1024` | 320 MiB | 1024 | 4096 | 512 | v5, bigtime |
 | `v5-64k` | `-b size=65536` | 512 MiB | 65536 | 65536 | 512 | v5, bigtime |
 | `v5` | none (defaults) | 320 MiB | 4096 | 4096 | 512 | v5, bigtime |
 
-Every variant also gets `-m uuid=<fixed>` and `-L tsk-<variant>`. "Defaults" are the defaults of the devcontainer's xfsprogs (Debian trixie, 6.13.0): for v5 that is crc, finobt, sparse inodes, rmapbt, reflink, bigtime, inobtcount and nrext64. The full `xfs_info` output is in a comment at the top of each Manifest. `mkfs.xfs` refuses file systems of 300 MB or less, and with 64 KiB blocks it needs 512 MiB for the minimum log size. The images are sparse when decompressed with `xz -d`, so they take little disk space.
+Every variant also gets `-m uuid=<fixed>` and `-L tsk-<variant>` (`tsk-v4-noft` for `v4-noftype`: a label has at most 12 bytes). "Defaults" are the defaults of the devcontainer's xfsprogs (Debian trixie, 6.13.0): for v5 that is crc, finobt, sparse inodes, rmapbt, reflink, bigtime, inobtcount and nrext64. The full `xfs_info` output is in a comment at the top of each Manifest. `mkfs.xfs` refuses file systems of 300 MB or less, and with 64 KiB blocks it needs 512 MiB for the minimum log size. The images are sparse when decompressed with `xz -d`, so they take little disk space.
 
-Together the ten files are about 1.6 MB:
+Together the twelve files are about 1.7 MB:
 
 | Variant | `.img.xz` | `.manifest.xz` | Entries |
 | --- | --- | --- | --- |
 | `v4` | 84,200 | 14,956 | 1,006 |
 | `v4-512` | 71,144 | 14,604 | 1,006 |
+| `v4-noftype` | 84,164 | 14,912 | 1,006 |
 | `v5-1k` | 106,924 | 18,332 | 1,181 |
 | `v5-64k` | 982,796 | 226,184 | 18,821 |
 | `v5` | 118,184 | 17,912 | 1,181 |

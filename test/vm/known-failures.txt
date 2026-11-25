@@ -15,10 +15,45 @@
 # sda5 /data-compat, sda6 /control, the Control file system).
 
 # check        partition  subject  difference     comment
-strict-guest   sda4       *        missing        /data is XFS: the root inode reads, but directories can't be listed yet, so every other entry is missing (#40)
-strict-guest   sda5       *        missing        /data-compat is XFS: the root inode reads, but directories can't be listed yet, so every other entry is missing (#40)
-strict-host    sda4       *        missing        /data is XFS: the root inode reads, but directories can't be listed yet, so every other entry is missing (#40)
-strict-host    sda5       *        missing        /data-compat is XFS: the root inode reads, but directories can't be listed yet, so every other entry is missing (#40)
+strict-guest   sda4       *        missing        /data is XFS: entries below leaf, node and B+tree directories are missing (#41; * as the list can't name a subtree, #52)
+strict-guest   sda5       *        missing        /data-compat is XFS: entries below leaf, node and B+tree directories are missing (#41; * as the list can't name a subtree, #52)
+strict-host    sda4       *        missing        /data is XFS: entries below leaf, node and B+tree directories are missing (#41; * as the list can't name a subtree, #52)
+strict-host    sda5       *        missing        /data-compat is XFS: entries below leaf, node and B+tree directories are missing (#41; * as the list can't name a subtree, #52)
+
+# What the walk reaches on /data and /data-compat (#40) that later tickets
+# read: symlink targets (#43) and a file whose extent map is a B+tree (#42).
+strict-guest   sda4       /corpus/fragmented/extents.bin  sha256  /data is XFS: a file whose extent map is a B+tree can't be read yet (#42)
+strict-guest   sda4       /corpus/links/absolute-symlink  target  /data is XFS: symlink targets not read yet (#43)
+strict-guest   sda4       /corpus/links/dangling-symlink  target  /data is XFS: symlink targets not read yet (#43)
+strict-guest   sda4       /corpus/links/dir-symlink       target  /data is XFS: symlink targets not read yet (#43)
+strict-guest   sda4       /corpus/links/long-symlink-300  target  /data is XFS: symlink targets not read yet (#43)
+strict-guest   sda4       /corpus/links/max-symlink-1023  target  /data is XFS: symlink targets not read yet (#43)
+strict-guest   sda4       /corpus/links/relative-symlink  target  /data is XFS: symlink targets not read yet (#43)
+strict-guest   sda4       /corpus/links/short-symlink     target  /data is XFS: symlink targets not read yet (#43)
+strict-guest   sda5       /corpus/fragmented/extents.bin  sha256  /data-compat is XFS: a file whose extent map is a B+tree can't be read yet (#42)
+strict-guest   sda5       /corpus/links/absolute-symlink  target  /data-compat is XFS: symlink targets not read yet (#43)
+strict-guest   sda5       /corpus/links/dangling-symlink  target  /data-compat is XFS: symlink targets not read yet (#43)
+strict-guest   sda5       /corpus/links/dir-symlink       target  /data-compat is XFS: symlink targets not read yet (#43)
+strict-guest   sda5       /corpus/links/long-symlink-300  target  /data-compat is XFS: symlink targets not read yet (#43)
+strict-guest   sda5       /corpus/links/max-symlink-1023  target  /data-compat is XFS: symlink targets not read yet (#43)
+strict-guest   sda5       /corpus/links/relative-symlink  target  /data-compat is XFS: symlink targets not read yet (#43)
+strict-guest   sda5       /corpus/links/short-symlink     target  /data-compat is XFS: symlink targets not read yet (#43)
+strict-host    sda4       /corpus/fragmented/extents.bin  sha256  /data is XFS: a file whose extent map is a B+tree can't be read yet (#42)
+strict-host    sda4       /corpus/links/absolute-symlink  target  /data is XFS: symlink targets not read yet (#43)
+strict-host    sda4       /corpus/links/dangling-symlink  target  /data is XFS: symlink targets not read yet (#43)
+strict-host    sda4       /corpus/links/dir-symlink       target  /data is XFS: symlink targets not read yet (#43)
+strict-host    sda4       /corpus/links/long-symlink-300  target  /data is XFS: symlink targets not read yet (#43)
+strict-host    sda4       /corpus/links/max-symlink-1023  target  /data is XFS: symlink targets not read yet (#43)
+strict-host    sda4       /corpus/links/relative-symlink  target  /data is XFS: symlink targets not read yet (#43)
+strict-host    sda4       /corpus/links/short-symlink     target  /data is XFS: symlink targets not read yet (#43)
+strict-host    sda5       /corpus/fragmented/extents.bin  sha256  /data-compat is XFS: a file whose extent map is a B+tree can't be read yet (#42)
+strict-host    sda5       /corpus/links/absolute-symlink  target  /data-compat is XFS: symlink targets not read yet (#43)
+strict-host    sda5       /corpus/links/dangling-symlink  target  /data-compat is XFS: symlink targets not read yet (#43)
+strict-host    sda5       /corpus/links/dir-symlink       target  /data-compat is XFS: symlink targets not read yet (#43)
+strict-host    sda5       /corpus/links/long-symlink-300  target  /data-compat is XFS: symlink targets not read yet (#43)
+strict-host    sda5       /corpus/links/max-symlink-1023  target  /data-compat is XFS: symlink targets not read yet (#43)
+strict-host    sda5       /corpus/links/relative-symlink  target  /data-compat is XFS: symlink targets not read yet (#43)
+strict-host    sda5       /corpus/links/short-symlink     target  /data-compat is XFS: symlink targets not read yet (#43)
 
 # The Test corpus on the Control file system (ext4): libtsk ext4 defects it
 # exposes (#19). The same on both sides.
@@ -46,10 +81,10 @@ strict-host    sda6       /corpus/links/max-symlink-1023               target  e
 strict-host    sda6       /corpus/dirs/btree/C                         extra   phantom name from an htree dx_node block parsed as dirents (#32)
 strict-host    sda6       /corpus/dirs/btree/g                         extra   phantom name from an htree dx_node block parsed as dirents (#32)
 strict-host    sda6       /corpus/dirs/btree/%E6                       extra   phantom name from an htree dx_node block parsed as dirents (#32)
-fls-guest      sda4       *        error:tool-failed  /data is XFS: directory listing not implemented yet (#40)
-fls-guest      sda5       *        error:tool-failed  /data-compat is XFS: directory listing not implemented yet (#40)
-fls-host       sda4       *        error:tool-failed  /data is XFS: directory listing not implemented yet (#40)
-fls-host       sda5       *        error:tool-failed  /data-compat is XFS: directory listing not implemented yet (#40)
+fls-guest      sda4       *        missing        /data is XFS: entries below leaf, node and B+tree directories are missing (#41; * as the list can't name a subtree, #52)
+fls-guest      sda5       *        missing        /data-compat is XFS: entries below leaf, node and B+tree directories are missing (#41; * as the list can't name a subtree, #52)
+fls-host       sda4       *        missing        /data is XFS: entries below leaf, node and B+tree directories are missing (#41; * as the list can't name a subtree, #52)
+fls-host       sda5       *        missing        /data-compat is XFS: entries below leaf, node and B+tree directories are missing (#41; * as the list can't name a subtree, #52)
 icat-guest     sda4       /corpus/fragmented/extents.bin  sha256  /data is XFS: a file whose extent map is a B+tree can't be read yet (#42)
 icat-guest     sda5       /corpus/fragmented/extents.bin  sha256  /data-compat is XFS: a file whose extent map is a B+tree can't be read yet (#42)
 icat-host      sda4       /corpus/fragmented/extents.bin  sha256  /data is XFS: a file whose extent map is a B+tree can't be read yet (#42)
@@ -73,9 +108,19 @@ fls-host       sda6       /corpus/dirs/btree/%E6                        extra   
 fls-guest      sda6       /corpus/special/socket                        type    fls prints a socket as s/h (tsk_fs_meta_type_str order)
 fls-host       sda6       /corpus/special/socket                        type    fls prints a socket as s/h (tsk_fs_meta_type_str order)
 
+# fls prints a socket as s/h on XFS too (tsk_fs_meta_type_str order, above).
+fls-guest      sda4       /corpus/special/socket                        type    fls prints a socket as s/h (tsk_fs_meta_type_str order)
+fls-guest      sda5       /corpus/special/socket                        type    fls prints a socket as s/h (tsk_fs_meta_type_str order)
+fls-host       sda4       /corpus/special/socket                        type    fls prints a socket as s/h (tsk_fs_meta_type_str order)
+fls-host       sda5       /corpus/special/socket                        type    fls prints a socket as s/h (tsk_fs_meta_type_str order)
+
 # Gate 4, Best-effort checks.
 # check            partition  subject  difference     comment
-best-effort-guest  sda2       *        missing        /boot is XFS: the root inode reads, but directories can't be listed yet, so every other entry is missing (#40)
-best-effort-guest  sda3       *        missing        / is XFS: the root inode reads, but directories can't be listed yet, so every other entry is missing (#40)
-best-effort-host   sda2       *        missing        /boot is XFS: the root inode reads, but directories can't be listed yet, so every other entry is missing (#40)
-best-effort-host   sda3       *        missing        / is XFS: the root inode reads, but directories can't be listed yet, so every other entry is missing (#40)
+best-effort-guest  sda2       *        missing        /boot is XFS: entries below leaf, node and B+tree directories are missing (#41; * as the list can't name a subtree, #52)
+best-effort-guest  sda3       *        missing        / is XFS: entries below leaf, node and B+tree directories are missing (#41; * as the list can't name a subtree, #52)
+best-effort-host   sda2       *        missing        /boot is XFS: entries below leaf, node and B+tree directories are missing (#41; * as the list can't name a subtree, #52)
+best-effort-host   sda3       *        missing        / is XFS: entries below leaf, node and B+tree directories are missing (#41; * as the list can't name a subtree, #52)
+best-effort-guest  sda2       *        target         /boot is XFS: symlink targets not read yet (#43)
+best-effort-guest  sda3       *        target         / is XFS: symlink targets not read yet (#43)
+best-effort-host   sda2       *        target         /boot is XFS: symlink targets not read yet (#43)
+best-effort-host   sda3       *        target         / is XFS: symlink targets not read yet (#43)

@@ -21,6 +21,7 @@ check_PROGRAMS = test_fs
 test_fs_SOURCES = test_fs.cpp fs_test_data.h fs_test_util.h \
     manifest_check.cpp manifest_check.h manifest_check_test.cpp \
     xfs_fixture_data.h xfs_fixtures_test.cpp xfs_inode_test.cpp \
+    xfs_dir_test.cpp \
     xfs_superblock_test.cpp \
     vm_harness.cpp vm_manifest.cpp vm_compare.cpp vm_sha256.cpp \
     vm_toolcheck.cpp
@@ -29,10 +30,12 @@ test_fs_SOURCES = test_fs.cpp fs_test_data.h fs_test_util.h \
 # Manifests unpacked into xfs/ (xz -d writes the images sparse), and the ext
 # image of the helper's tests. Nothing here is committed.
 XFS_FIXTURE_DIR = $(VM_DIR)/fixtures/xfs
-XFS_VARIANTS = v4 v4-512 v5-1k v5-64k v5
+XFS_VARIANTS = v4 v4-512 v4-noftype v5-1k v5-64k v5
 XFS_FIXTURE_FILES = \
     $(XFS_FIXTURE_DIR)/v4.img.xz $(XFS_FIXTURE_DIR)/v4.manifest.xz \
     $(XFS_FIXTURE_DIR)/v4-512.img.xz $(XFS_FIXTURE_DIR)/v4-512.manifest.xz \
+    $(XFS_FIXTURE_DIR)/v4-noftype.img.xz \
+    $(XFS_FIXTURE_DIR)/v4-noftype.manifest.xz \
     $(XFS_FIXTURE_DIR)/v5-1k.img.xz $(XFS_FIXTURE_DIR)/v5-1k.manifest.xz \
     $(XFS_FIXTURE_DIR)/v5-64k.img.xz $(XFS_FIXTURE_DIR)/v5-64k.manifest.xz \
     $(XFS_FIXTURE_DIR)/v5.img.xz $(XFS_FIXTURE_DIR)/v5.manifest.xz
@@ -62,4 +65,4 @@ MAINTAINERCLEANFILES = Makefile.in
 
 clean-local:
 	-rm -rf xfs xfs.tmp ext-small.img.tmp ext-small.img.tmp.d xfs-sb-*.img \
-	    xfs-inode-*.img
+	    xfs-inode-*.img xfs-dir-*.img

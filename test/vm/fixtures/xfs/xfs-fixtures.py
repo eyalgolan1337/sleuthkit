@@ -42,7 +42,7 @@ MIB = 1024 * 1024
 class Variant:
     """One fixture image: mkfs.xfs options and the geometry they must give."""
 
-    def __init__(self, name, mkfs, size_mib, blocksize, v5, uuid, label):
+    def __init__(self, name, mkfs, size_mib, blocksize, v5, uuid, label, ftype=True):
         self.name = name
         self.mkfs = mkfs
         self.size = size_mib * MIB
@@ -56,6 +56,8 @@ class Variant:
         self.inodesize = 512 if v5 else 256
         # bigtime is a v5 default since xfsprogs 5.15; v4 can't have it.
         self.bigtime = v5
+        # Directory entries record the file type (a default; v5 always).
+        self.ftype = ftype
 
 
 # mkfs.xfs needs more than 300 MB. With 64 KiB blocks, 320 MiB in four AGs is
@@ -65,6 +67,8 @@ VARIANTS = [
             '5f4b0c1e-0000-4000-8000-000000000004', 'tsk-v4'),
     Variant('v4-512', ['-m', 'crc=0', '-b', 'size=512'], 320, 512, False,
             '5f4b0c1e-0000-4000-8000-000000000512', 'tsk-v4-512'),
+    Variant('v4-noftype', ['-m', 'crc=0', '-n', 'ftype=0'], 320, 4096, False,
+            '5f4b0c1e-0000-4000-8000-0000000000f0', 'tsk-v4-noft', ftype=False),
     Variant('v5-1k', ['-b', 'size=1024'], 320, 1024, True,
             '5f4b0c1e-0000-4000-8000-000000001024', 'tsk-v5-1k'),
     Variant('v5-64k', ['-b', 'size=65536'], 512, 65536, True,
@@ -140,9 +144,10 @@ def file_node(name, perm, uid, gid, data):
     return n
 
 
-def dir_entry_size(namelen):
-    # xfs_dir2_data_entry: inumber, namelen, name, ftype, tag; 8-byte aligned.
-    return (8 + 1 + namelen + 1 + 2 + 7) // 8 * 8
+def dir_entry_size(namelen, ftype=True):
+    # xfs_dir2_data_entry: inumber, namelen, name, ftype (if the file system
+    # has it), tag; 8-byte aligned.
+    return (8 + 1 + namelen + (1 if ftype else 0) + 2 + 7) // 8 * 8
 
 
 def describe(v):
@@ -186,7 +191,7 @@ def describe(v):
 
     dirs = root.add(Node('dirs', 'dir', 0o755))
     hdr = 64 if v.v5 else 16  # directory data/leaf block header
-    per_block = lambda namelen: (v.dirblksize - hdr) // dir_entry_size(namelen)
+    per_block = lambda namelen: (v.dirblksize - hdr) // dir_entry_size(namelen, v.ftype)
     leaf_capacity = (v.dirblksize - hdr) // 8
 
     def fill(d, count, namelen, prefix, every=0):
@@ -466,6 +471,7 @@ def check_geometry(v, info):
         'inode size': get(r'isize=(\d+)'),
         'crc': get(r'crc=(\d)'),
         'bigtime': get(r'bigtime=(\d)'),
+        'ftype': get(r'ftype=(\d)'),
     }
     want = {
         'block size': v.blocksize,
@@ -473,6 +479,7 @@ def check_geometry(v, info):
         'inode size': v.inodesize,
         'crc': int(v.v5),
         'bigtime': int(v.bigtime),
+        'ftype': int(v.ftype),
     }
     for k in want:
         if got[k] != want[k]:
@@ -506,6 +513,7 @@ def walk_image(image, tmpdir):
     while level:
         out = xfs_db(image, [['inode %d' % ino, 'ls'] for _, ino in level], tmpdir)
         nxt = []
+        unknown = []  # (path, inode) of entries ls has no type for (no ftype)
         for i, (dpath, _) in enumerate(level):
             for line in out[i]:
                 m = re.match(r'^\s*\d+\s+(\d+)\s+(\S+)\s+0x[0-9a-fA-F]+\s+(\d+) ', line)
@@ -524,6 +532,18 @@ def walk_image(image, tmpdir):
                     raise Fail('duplicate path %r' % path)
                 found[path] = (ino, m.group(2))
                 if m.group(2) == 'directory':
+                    nxt.append((path, ino))
+                elif m.group(2) == 'unknown':
+                    unknown.append((path, ino))
+        # Without ftype, ls says "unknown" for every entry: the inode's mode
+        # tells the directories.
+        if unknown:
+            out = xfs_db(image, [['inode %d' % ino, 'print core.mode'] for _, ino in unknown], tmpdir)
+            for i, (path, ino) in enumerate(unknown):
+                mode = fields(out[i]).get('core.mode')
+                if mode is None:
+                    raise Fail('%r: xfs_db printed no core.mode' % path)
+                if int(mode, 8) & 0o170000 == 0o040000:
                     nxt.append((path, ino))
         level = nxt
     return found
