@@ -244,19 +244,16 @@ class XfsFixturesTest : public CppUnit::TestFixture {
     }
 
     // The validate command's walk of each image (the harness's, through
-    // short-form and block directories) matches the Manifest, except for
-    // what later tickets read: the entries below leaf, node and B+tree
-    // directories (#41), each one listed, and inode fields of #43 and #50.
+    // directories of every format) matches the Manifest: no entry missing,
+    // extra or twice, except for inode fields that later tickets read (#43,
+    // #50).
     void testWalkMatchesManifest()
     {
         for (const Fixture &f : fstest::ALL_FIXTURES) {
             const std::string v = f.variant;
             const tskval::Manifest manifest = read_manifest(f);
-            const std::string missing = fstest::larger_dirs_missing(manifest);
-            CPPUNIT_ASSERT_MESSAGE(
-                v + ": nothing below the larger formats", !missing.empty());
-            const fstest::WalkCheck walk = fstest::check_walk(image_path(f),
-                manifest, fstest::inode_known_failures(f) + missing);
+            const fstest::WalkCheck walk = fstest::check_walk(
+                image_path(f), manifest, fstest::inode_known_failures(f));
             CPPUNIT_ASSERT_MESSAGE(v + ": " + walk.report, walk.passed);
         }
     }

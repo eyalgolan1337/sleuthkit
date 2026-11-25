@@ -296,6 +296,44 @@ class PatchedImage {
     std::string m_path;
 };
 
+// `n` bytes at `off` of the file `path`.
+std::vector<uint8_t>
+read_at(const std::string &path, uint64_t off, size_t n)
+{
+    std::ifstream in(path, std::ios::binary);
+    in.seekg(static_cast<std::streamoff>(off));
+    std::vector<uint8_t> b(n);
+    in.read(
+        reinterpret_cast<char *>(b.data()), static_cast<std::streamsize>(n));
+    CPPUNIT_ASSERT_MESSAGE(path + " is short", in.good());
+    return b;
+}
+
+// The big-endian number in the `n` bytes at `at` of `b`.
+uint64_t
+get_be(const std::vector<uint8_t> &b, size_t at, size_t n)
+{
+    uint64_t v = 0;
+    for (size_t i = 0; i < n; ++i) {
+        v = (v << 8) | b[at + i];
+    }
+    return v;
+}
+
+// The byte offset in Fixture `f` of the block with XFS block number
+// `fsblock`: the AG number above the bits of the AG block number.
+uint64_t
+fsblock_offset(const Fixture &f, uint64_t fsblock)
+{
+    unsigned agblklog = 0;
+    while ((1u << agblklog) < f.ag_blocks) {
+        ++agblklog;
+    }
+    const uint64_t block = (fsblock >> agblklog) * f.ag_blocks +
+        (fsblock & ((uint64_t{1} << agblklog) - 1));
+    return block * f.block_size;
+}
+
 void
 put_be16(std::vector<uint8_t> &b, size_t at, uint16_t v)
 {
@@ -341,9 +379,15 @@ class XfsDirTest : public CppUnit::TestFixture {
     CPPUNIT_TEST_SUITE(XfsDirTest);
     CPPUNIT_TEST(testShortformDirectories);
     CPPUNIT_TEST(testBlockDirectories);
+    CPPUNIT_TEST(testLeafAndNodeDirectories);
+    CPPUNIT_TEST(testBtreeDirectories);
     CPPUNIT_TEST(testRecursiveWalkAsOnExt);
     CPPUNIT_TEST(testOpenByPath);
-    CPPUNIT_TEST(testLargerFormatsNotReadYet);
+    CPPUNIT_TEST(testSingleDataBlock);
+    CPPUNIT_TEST(testFreedDataBlockSkipped);
+    CPPUNIT_TEST(testCorruptDataBlocks);
+    CPPUNIT_TEST(testCorruptExtentTree);
+    CPPUNIT_TEST(testExtentTreeOfFileNotReadYet);
     CPPUNIT_TEST(testOpenErrors);
     CPPUNIT_TEST(testNamesAsStored);
     CPPUNIT_TEST(testShortformEightByteInodes);
@@ -387,8 +431,34 @@ class XfsDirTest : public CppUnit::TestFixture {
         }
     }
 
+    // Leaf and node directories (several data blocks, with the names; one
+    // or more index blocks at 32 GiB, and a node directory's free-space
+    // blocks at 64 GiB, with no names): each name once, none from the
+    // index. They store "." and "..".
+    void testLeafAndNodeDirectories()
+    {
+        for (const Fixture &f : ALL_FIXTURES) {
+            const tskval::Manifest m = read_manifest(f);
+            OpenedFs o(image_path(f));
+            for (const char *dir : {"/dirs/leaf", "/dirs/node"}) {
+                check_listing(f, o.fs.get(), m, dir, true);
+            }
+        }
+    }
+
+    // B+tree directories: the blocks are found through an extent map that
+    // is a B+tree rooted in the inode.
+    void testBtreeDirectories()
+    {
+        for (const Fixture &f : ALL_FIXTURES) {
+            const tskval::Manifest m = read_manifest(f);
+            OpenedFs o(image_path(f));
+            check_listing(f, o.fs.get(), m, "/dirs/btree", true);
+        }
+    }
+
     // A recursive walk of the root with allocated and unallocated names
-    // finishes (the larger directory formats fail on their own, #41), lists
+    // finishes, lists
     // every path once and no $OrphanFiles (XFS doesn't add it), and reports
     // "." and ".." of each directory it read exactly as on ext: the same
     // name flags and types, the same metadata types and flags.
@@ -413,9 +483,9 @@ class XfsDirTest : public CppUnit::TestFixture {
                 CPPUNIT_ASSERT_MESSAGE(std::string(v).append(": ").append(p),
                     p.find("$OrphanFiles") == std::string::npos);
             }
-            // The root, /dirs, /times, /dirs/shortform and /dirs/block.
+            // The root, /dirs, /times and the five directories of /dirs.
             CPPUNIT_ASSERT_EQUAL_MESSAGE(
-                v + ": dots", size_t{2 * 5}, seen.dot_count);
+                v + ": dots", size_t{2 * 8}, seen.dot_count);
             if (f.ftype) {
                 CPPUNIT_ASSERT_MESSAGE(
                     v + ": dots differ from ext's", on_ext.dots == seen.dots);
@@ -423,9 +493,10 @@ class XfsDirTest : public CppUnit::TestFixture {
         }
     }
 
-    // tsk_fs_file_open finds every path of the Manifest that short-form and
-    // block directories lead to (the 255-byte name too) at its inode. A path
-    // below a leaf directory isn't found yet (#41).
+    // tsk_fs_file_open finds the paths of the Manifest at their inodes: the
+    // 255-byte name, and names in leaf, node and B+tree directories. Of the
+    // entries of each of those three, every 50th and the last are opened
+    // (each lookup lists the directory again).
     void testOpenByPath()
     {
         for (const Fixture &f : ALL_FIXTURES) {
@@ -433,10 +504,21 @@ class XfsDirTest : public CppUnit::TestFixture {
             const tskval::Manifest m = read_manifest(f);
             OpenedFs o(image_path(f));
             const FsPtr &fs = o.fs;
-            size_t opened = 0;
-            for (const tskval::Entry &e : m.entries) {
-                if (fstest::below_larger_dir(e.path)) {
-                    continue;
+            size_t in_large = 0;
+            for (size_t i = 0; i < m.entries.size(); ++i) {
+                const tskval::Entry &e = m.entries[i];
+                const auto large = [](const std::string &path) {
+                    return path.compare(0, 11, "/dirs/leaf/") == 0 ||
+                        path.compare(0, 11, "/dirs/node/") == 0 ||
+                        path.compare(0, 12, "/dirs/btree/") == 0;
+                };
+                if (large(e.path)) {
+                    const bool last = i + 1 == m.entries.size() ||
+                        m.entries[i + 1].path.compare(0, 11, e.path, 0, 11) !=
+                            0;
+                    if (++in_large % 50 != 0 && !last) {
+                        continue;
+                    }
                 }
                 tsk_error_reset();
                 fstest::FilePtr file(
@@ -447,61 +529,229 @@ class XfsDirTest : public CppUnit::TestFixture {
                     v + ": " + e.path + ": no metadata", file->meta != nullptr);
                 CPPUNIT_ASSERT_EQUAL_MESSAGE(v + ": inode of " + e.path,
                     e.inode, static_cast<uint64_t>(file->meta->addr));
-                ++opened;
             }
-            CPPUNIT_ASSERT_MESSAGE(v + ": few paths", opened > 30);
-
-            std::string leaf;
-            for (const tskval::Entry &e : m.entries) {
-                if (e.path.compare(0, 11, "/dirs/leaf/") == 0) {
-                    leaf = e.path;
-                    break;
-                }
-            }
-            tsk_error_reset();
-            fstest::FilePtr file(
-                tsk_fs_file_open(fs.get(), nullptr, leaf.c_str()));
-            const std::string what = std::string(v).append(": ").append(leaf);
-            CPPUNIT_ASSERT_MESSAGE(what, file == nullptr);
-            CPPUNIT_ASSERT_EQUAL_MESSAGE(
-                std::string(what).append(": ").append(error_text()),
-                static_cast<uint32_t>(TSK_ERR_FS_UNSUPFUNC),
-                static_cast<uint32_t>(tsk_error_get_errno()));
         }
     }
 
-    // Leaf, node and B+tree directories are not read yet (#41): opening one
-    // fails with TSK_ERR_FS_UNSUPFUNC. So does a single-block directory
-    // whose block is a leaf directory's data block (a leaf directory can
-    // shrink to one data block).
-    void testLargerFormatsNotReadYet()
+    // A directory of one data block (a leaf directory can shrink to one,
+    // whose magic is a data block's, not a block directory's) lists its
+    // entries up to the end of the block: /dirs/block with a data block's
+    // magic and its leaf entries and tail turned into an unused region. v4
+    // and v5 magics (directory block CRCs are not checked, #45).
+    void testSingleDataBlock()
     {
-        for (const Fixture &f : ALL_FIXTURES) {
-            const tskval::Manifest m = read_manifest(f);
-            OpenedFs o(image_path(f));
-            for (const char *dir : fstest::LARGER_DIRS) {
-                check_open_fails(o.fs.get(), entry_of(m, dir).inode,
-                    TSK_ERR_FS_UNSUPFUNC, std::string(f.variant) + " " + dir);
-            }
-        }
-        // v4 and v5 magics (directory block CRCs are not checked, #45).
         for (const Fixture &f : {fstest::V4, fstest::V5}) {
             const std::string v = f.variant;
             const tskval::Manifest m = read_manifest(f);
             const TSK_INUM_T inum = entry_of(m, "/dirs/block").inode;
             const uint64_t block = dir_block_offset(f, m, "/dirs/block");
             PatchedImage img(
-                f, "leaf-block-" + v, {inode_offset(f, inum), block});
+                f, "data-block-" + v, {inode_offset(f, inum), block});
             if (f.version == 5) {
                 img.replace(block, 4, "XDB3", "XDD3");
             }
             else {
                 img.replace(block, 4, "XD2B", "XD2D");
             }
+            // The tail's count of leaf entries (8 bytes each, before the
+            // 8-byte tail).
+            const size_t tail = f.block_size - 8;
+            const uint32_t leaves =
+                static_cast<uint32_t>(get_be(img.read(block + tail, 4), 0, 4));
+            const size_t unused = 8 + size_t{leaves} * 8;
+            std::vector<uint8_t> region = {0xff, 0xff, 0, 0};
+            put_be16(region, 2, static_cast<uint16_t>(unused));
+            img.patch(block + f.block_size - unused, region);
             OpenedFs o(img.path());
-            check_open_fails(
-                o.fs.get(), inum, TSK_ERR_FS_UNSUPFUNC, v + ": data magic");
+            check_listing(f, o.fs.get(), m, "/dirs/block", true);
         }
+    }
+
+    // A data block that was freed leaves a hole in the directory, which is
+    // skipped: /dirs/leaf without its second extent (the data blocks after
+    // the first) lists the names of the first block only.
+    void testFreedDataBlockSkipped()
+    {
+        const Fixture &f = fstest::V4;
+        const tskval::Manifest m = read_manifest(f);
+        const TSK_INUM_T inum = entry_of(m, "/dirs/leaf").inode;
+        const uint64_t inode = inode_offset(f, inum);
+        // di_nextents (4 bytes at 76), then the extent records in the fork:
+        // the file offset in blocks above the low 9 bits of the first half,
+        // the start block and the length (21 bits) in the rest.
+        const uint32_t nextents = static_cast<uint32_t>(
+            get_be(read_at(image_path(f), inode + 76, 4), 0, 4));
+        CPPUNIT_ASSERT_MESSAGE("few extents", nextents >= 2);
+        std::vector<uint8_t> recs =
+            read_at(image_path(f), inode + V4_FORK, size_t{nextents} * 16);
+        CPPUNIT_ASSERT_EQUAL_MESSAGE(
+            "second extent", uint64_t{1}, get_be(recs, 16, 8) >> 9);
+        const uint64_t first = fsblock_offset(f,
+            ((get_be(recs, 0, 8) & 0x1ff) << 43) | (get_be(recs, 8, 8) >> 21));
+        PatchedImage img(f, "leaf-hole", {inode, first});
+        recs.erase(recs.begin() + 16, recs.begin() + 32);
+        img.patch(inode + V4_FORK, recs);
+        std::vector<uint8_t> n(4);
+        put_be32(n, 0, nextents - 1);
+        img.patch(inode + 76, n);
+
+        OpenedFs whole(image_path(f));
+        const std::map<std::string, Listed> all =
+            listed_names(f, whole.fs.get(), m, "/dirs/leaf");
+        OpenedFs o(img.path());
+        const std::map<std::string, Listed> got =
+            listed_names(f, o.fs.get(), m, "/dirs/leaf");
+        CPPUNIT_ASSERT_MESSAGE("no entries", got.size() > 2);
+        CPPUNIT_ASSERT_MESSAGE("all entries", got.size() < all.size());
+        CPPUNIT_ASSERT_MESSAGE("no .", got.count(".") == 1);
+        for (const auto &g : got) {
+            const auto in_all = all.find(g.first);
+            CPPUNIT_ASSERT_MESSAGE(g.first + " is new", in_all != all.end());
+            CPPUNIT_ASSERT_EQUAL_MESSAGE(
+                g.first, in_all->second.inode, g.second.inode);
+        }
+    }
+
+    // A directory of several blocks whose block is not a data block (a
+    // block directory's magic is one block's only), or whose size is not a
+    // number of directory blocks, gives TSK_ERR_FS_CORRUPT.
+    void testCorruptDataBlocks()
+    {
+        const Fixture &f = fstest::V4;
+        const tskval::Manifest m = read_manifest(f);
+        const TSK_INUM_T inum = entry_of(m, "/dirs/leaf").inode;
+        const uint64_t inode = inode_offset(f, inum);
+        const std::vector<uint8_t> rec =
+            read_at(image_path(f), inode + V4_FORK, 16);
+        const uint64_t block = fsblock_offset(
+            f, ((get_be(rec, 0, 8) & 0x1ff) << 43) | (get_be(rec, 8, 8) >> 21));
+        const auto check = [&, f](const std::string &name, uint64_t off,
+                               const std::vector<uint8_t> &bytes,
+                               uint64_t off2 = 0,
+                               const std::vector<uint8_t> &bytes2 = {}) {
+            PatchedImage img(
+                f, std::string("data-").append(name), {inode, block});
+            img.patch(off, bytes);
+            img.patch(off2 != 0 ? off2 : off, off2 != 0 ? bytes2 : bytes);
+            OpenedFs o(img.path());
+            check_open_fails(o.fs.get(), inum, TSK_ERR_FS_CORRUPT, name);
+        };
+        check("block-magic", block, {'X', 'D', '2', 'B'});
+        check("magic", block, {'X', 'D', '2', 'F'});
+        check("free-long", block + 16, {0xff, 0xff, 0x10, 0x08});
+        // An unused region up to the last 8 bytes, which are too few for
+        // an entry (the name length would be past the block).
+        check("short-entry", block + 16, {0xff, 0xff, 0x0f, 0xe8},
+            block + f.block_size - 8, {0, 0, 0, 0, 0, 0, 0, 1});
+        // di_size (8 bytes at 56): 4 KiB and a half.
+        check("size", inode + 56, {0, 0, 0, 0, 0, 0, 0x18, 0});
+    }
+
+    // An extent B+tree that is not one gives TSK_ERR_FS_INODE_COR, when the
+    // directory is opened and when its content is read: a root of level 0,
+    // with no records or more than the fork holds, a pointer outside the
+    // file system, a block of another magic or level or with no records, a
+    // leaf pointed to twice (its records are out of order the second
+    // time), and a tree with fewer or more records than the inode says.
+    void testCorruptExtentTree()
+    {
+        const Fixture &f = fstest::V4;
+        const tskval::Manifest m = read_manifest(f);
+        const TSK_INUM_T inum = entry_of(m, "/dirs/btree").inode;
+        const uint64_t inode = inode_offset(f, inum);
+        const uint64_t fork = inode + V4_FORK;
+        // The root (no attr fork, so the fork is the rest of the inode):
+        // level, records, 8-byte keys, then, after room for the most keys,
+        // 8-byte pointers.
+        const std::vector<uint8_t> root =
+            read_at(image_path(f), fork, f.inode_size - V4_FORK);
+        CPPUNIT_ASSERT_EQUAL_MESSAGE("no attr fork", 0,
+            static_cast<int>(read_at(image_path(f), inode + 82, 1)[0]));
+        CPPUNIT_ASSERT_EQUAL_MESSAGE(
+            "root level", uint64_t{1}, get_be(root, 0, 2));
+        const size_t numrecs = static_cast<size_t>(get_be(root, 2, 2));
+        CPPUNIT_ASSERT_MESSAGE("no leaf", numrecs >= 1);
+        const size_t ptrs = 4 + (root.size() - 4) / 16 * 8;
+        std::vector<uint64_t> blocks = {inode};
+        for (size_t i = 0; i < numrecs; ++i) {
+            blocks.push_back(fsblock_offset(f, get_be(root, ptrs + 8 * i, 8)));
+        }
+        const uint64_t leaf = blocks[1];
+
+        const auto check = [&, f](const std::string &name, uint64_t off,
+                               const std::vector<uint8_t> &bytes,
+                               uint64_t off2 = 0,
+                               const std::vector<uint8_t> &bytes2 = {}) {
+            PatchedImage img(f, std::string("bmbt-").append(name), blocks);
+            img.patch(off, bytes);
+            img.patch(off2 != 0 ? off2 : off, off2 != 0 ? bytes2 : bytes);
+            OpenedFs o(img.path());
+            check_open_fails(o.fs.get(), inum, TSK_ERR_FS_INODE_COR, name);
+            fstest::FilePtr file(
+                tsk_fs_file_open_meta(o.fs.get(), nullptr, inum));
+            CPPUNIT_ASSERT_MESSAGE(name + ": " + error_text(), file != nullptr);
+            char buf[16];
+            tsk_error_reset();
+            CPPUNIT_ASSERT_EQUAL_MESSAGE(name + ": read", ssize_t{-1},
+                tsk_fs_file_read(file.get(), 0, buf, sizeof(buf),
+                    TSK_FS_FILE_READ_FLAG_NONE));
+            CPPUNIT_ASSERT_EQUAL_MESSAGE(name + ": " + error_text(),
+                static_cast<uint32_t>(TSK_ERR_FS_INODE_COR),
+                tsk_error_get_errno());
+        };
+        check("root-level-0", fork, {0, 0});
+        check("root-level-10", fork, {0, 10});
+        check("root-no-records", fork + 2, {0, 0});
+        check("root-records", fork + 2, {0, 10});
+        check("pointer", fork + ptrs, {0, 0, 0, 0, 0, 0x7f, 0xff, 0xff});
+        check("magic", leaf, {'B', 'M', 'A', '3'});
+        check("leaf-level", leaf + 4, {0, 1});
+        check("leaf-no-records", leaf + 6, {0, 0});
+        check("leaf-records", leaf + 6, {0x10, 0});
+        const std::vector<uint8_t> first(
+            root.begin() + ptrs, root.begin() + ptrs + 8);
+        // Two records in the root, both pointing to the first leaf.
+        check("leaf-twice", fork + 2, {0, 2}, fork + ptrs + 8, first);
+        // di_nextents (4 bytes at 76).
+        const uint32_t nextents = static_cast<uint32_t>(
+            get_be(read_at(image_path(f), inode + 76, 4), 0, 4));
+        std::vector<uint8_t> n(4);
+        put_be32(n, 0, nextents + 1);
+        check("fewer-records", inode + 76, n);
+        put_be32(n, 0, nextents - 1);
+        check("more-records", inode + 76, n);
+
+        // The copy itself lists as the Fixture does.
+        PatchedImage img(
+            f, "bmbt-whole", whole_dir_blocks(f, m, "/dirs/btree", blocks));
+        OpenedFs o(img.path());
+        check_listing(f, o.fs.get(), m, "/dirs/btree", true);
+    }
+
+    // The content of a file whose extent map is a B+tree is not read yet
+    // (#42): /dirs/btree with a regular file's mode fails with
+    // TSK_ERR_FS_UNSUPFUNC when read.
+    void testExtentTreeOfFileNotReadYet()
+    {
+        const Fixture &f = fstest::V4;
+        const tskval::Manifest m = read_manifest(f);
+        const TSK_INUM_T inum = entry_of(m, "/dirs/btree").inode;
+        const uint64_t inode = inode_offset(f, inum);
+        PatchedImage img(f, "bmbt-file", {inode});
+        // di_mode (2 bytes at 2): a regular file, 0644.
+        img.patch(inode + 2, {0x81, 0xa4});
+        OpenedFs o(img.path());
+        fstest::FilePtr file(tsk_fs_file_open_meta(o.fs.get(), nullptr, inum));
+        CPPUNIT_ASSERT_MESSAGE(error_text(), file != nullptr);
+        CPPUNIT_ASSERT_EQUAL(TSK_FS_META_TYPE_REG, file->meta->type);
+        char buf[16];
+        tsk_error_reset();
+        CPPUNIT_ASSERT_EQUAL(ssize_t{-1},
+            tsk_fs_file_read(
+                file.get(), 0, buf, sizeof(buf), TSK_FS_FILE_READ_FLAG_NONE));
+        CPPUNIT_ASSERT_EQUAL_MESSAGE(error_text(),
+            static_cast<uint32_t>(TSK_ERR_FS_UNSUPFUNC), tsk_error_get_errno());
+        tsk_error_reset();
     }
 
     // A number past $OrphanFiles, a file that is not a directory and
@@ -683,6 +933,22 @@ class XfsDirTest : public CppUnit::TestFixture {
     }
 
   private:
+    // `blocks` and the byte offset of every block of directory `dir`, from
+    // libtsk's own block map of it.
+    static std::vector<uint64_t> whole_dir_blocks(const Fixture &f,
+        const tskval::Manifest &m, const std::string &dir,
+        std::vector<uint64_t> blocks)
+    {
+        OpenedFs o(image_path(f));
+        fstest::FilePtr file(
+            tsk_fs_file_open_meta(o.fs.get(), nullptr, entry_of(m, dir).inode));
+        CPPUNIT_ASSERT_MESSAGE(dir + ": " + error_text(), file != nullptr);
+        for (const TSK_DADDR_T b : fstest::file_blocks(file.get())) {
+            blocks.push_back(b * f.block_size);
+        }
+        return blocks;
+    }
+
     // The byte offset of the first (only) block of block directory `dir`,
     // from libtsk's own block map of it.
     static uint64_t dir_block_offset(

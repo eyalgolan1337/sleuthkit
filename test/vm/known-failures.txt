@@ -14,14 +14,9 @@
 # Partitions: the guest's device names (sda2 /boot, sda3 /, sda4 /data,
 # sda5 /data-compat, sda6 /control, the Control file system).
 
+# What later tickets read on /data and /data-compat: symlink targets (#43)
+# and a file whose extent map is a B+tree (#42).
 # check        partition  subject  difference     comment
-strict-guest   sda4       *        missing        /data is XFS: entries below leaf, node and B+tree directories are missing (#41; * as the list can't name a subtree, #52)
-strict-guest   sda5       *        missing        /data-compat is XFS: entries below leaf, node and B+tree directories are missing (#41; * as the list can't name a subtree, #52)
-strict-host    sda4       *        missing        /data is XFS: entries below leaf, node and B+tree directories are missing (#41; * as the list can't name a subtree, #52)
-strict-host    sda5       *        missing        /data-compat is XFS: entries below leaf, node and B+tree directories are missing (#41; * as the list can't name a subtree, #52)
-
-# What the walk reaches on /data and /data-compat (#40) that later tickets
-# read: symlink targets (#43) and a file whose extent map is a B+tree (#42).
 strict-guest   sda4       /corpus/fragmented/extents.bin  sha256  /data is XFS: a file whose extent map is a B+tree can't be read yet (#42)
 strict-guest   sda4       /corpus/links/absolute-symlink  target  /data is XFS: symlink targets not read yet (#43)
 strict-guest   sda4       /corpus/links/dangling-symlink  target  /data is XFS: symlink targets not read yet (#43)
@@ -81,10 +76,6 @@ strict-host    sda6       /corpus/links/max-symlink-1023               target  e
 strict-host    sda6       /corpus/dirs/btree/C                         extra   phantom name from an htree dx_node block parsed as dirents (#32)
 strict-host    sda6       /corpus/dirs/btree/g                         extra   phantom name from an htree dx_node block parsed as dirents (#32)
 strict-host    sda6       /corpus/dirs/btree/%E6                       extra   phantom name from an htree dx_node block parsed as dirents (#32)
-fls-guest      sda4       *        missing        /data is XFS: entries below leaf, node and B+tree directories are missing (#41; * as the list can't name a subtree, #52)
-fls-guest      sda5       *        missing        /data-compat is XFS: entries below leaf, node and B+tree directories are missing (#41; * as the list can't name a subtree, #52)
-fls-host       sda4       *        missing        /data is XFS: entries below leaf, node and B+tree directories are missing (#41; * as the list can't name a subtree, #52)
-fls-host       sda5       *        missing        /data-compat is XFS: entries below leaf, node and B+tree directories are missing (#41; * as the list can't name a subtree, #52)
 icat-guest     sda4       /corpus/fragmented/extents.bin  sha256  /data is XFS: a file whose extent map is a B+tree can't be read yet (#42)
 icat-guest     sda5       /corpus/fragmented/extents.bin  sha256  /data-compat is XFS: a file whose extent map is a B+tree can't be read yet (#42)
 icat-host      sda4       /corpus/fragmented/extents.bin  sha256  /data is XFS: a file whose extent map is a B+tree can't be read yet (#42)
@@ -116,10 +107,6 @@ fls-host       sda5       /corpus/special/socket                        type    
 
 # Gate 4, Best-effort checks.
 # check            partition  subject  difference     comment
-best-effort-guest  sda2       *        missing        /boot is XFS: entries below leaf, node and B+tree directories are missing (#41; * as the list can't name a subtree, #52)
-best-effort-guest  sda3       *        missing        / is XFS: entries below leaf, node and B+tree directories are missing (#41; * as the list can't name a subtree, #52)
-best-effort-host   sda2       *        missing        /boot is XFS: entries below leaf, node and B+tree directories are missing (#41; * as the list can't name a subtree, #52)
-best-effort-host   sda3       *        missing        / is XFS: entries below leaf, node and B+tree directories are missing (#41; * as the list can't name a subtree, #52)
 best-effort-guest  sda2       *        target         /boot is XFS: symlink targets not read yet (#43)
 best-effort-guest  sda3       *        target         / is XFS: symlink targets not read yet (#43)
 best-effort-host   sda2       *        target         /boot is XFS: symlink targets not read yet (#43)

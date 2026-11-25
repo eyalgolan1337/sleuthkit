@@ -99,7 +99,6 @@ class XfsInodeTest : public CppUnit::TestFixture {
     CPPUNIT_TEST(testHolesAreSparse);
     CPPUNIT_TEST(testUnwrittenExtentReadsAsZeros);
     CPPUNIT_TEST(testLocalDataIsResident);
-    CPPUNIT_TEST(testExtentTreeNotReadYet);
     CPPUNIT_TEST(testIstatMetadata);
     CPPUNIT_TEST(testIstatBlocks);
     CPPUNIT_TEST(testIstatNoInodeGivesError);
@@ -325,29 +324,6 @@ class XfsInodeTest : public CppUnit::TestFixture {
                 (uint64_t{u[3]} << 16) | (uint64_t{u[4]} << 8) | u[5];
             CPPUNIT_ASSERT_EQUAL_MESSAGE(
                 v + ": parent", inode_of(manifest, "/dirs"), parent);
-        }
-    }
-
-    // A data fork that is the root of an extent B+tree is not read yet
-    // (#42): reading its content fails with TSK_ERR_FS_UNSUPFUNC, while its
-    // metadata opens (testEveryEntryOpensByInode). /dirs/btree is one.
-    void testExtentTreeNotReadYet()
-    {
-        for (const Fixture &f : {fstest::V4, fstest::V5}) {
-            const std::string v = f.variant;
-            ImgPtr img = open_image(image_path(f));
-            FsPtr fs(tsk_fs_open_img(img.get(), 0, TSK_FS_TYPE_XFS));
-            CPPUNIT_ASSERT_MESSAGE(v + ": " + error_text(), fs != nullptr);
-            fstest::FilePtr file(open_path(f, fs.get(), "/dirs/btree"));
-            char buf[16];
-            tsk_error_reset();
-            CPPUNIT_ASSERT_EQUAL_MESSAGE(v + ": read", ssize_t{-1},
-                tsk_fs_file_read(file.get(), 0, buf, sizeof(buf),
-                    TSK_FS_FILE_READ_FLAG_NONE));
-            CPPUNIT_ASSERT_EQUAL_MESSAGE(v + ": " + error_text(),
-                static_cast<uint32_t>(TSK_ERR_FS_UNSUPFUNC),
-                tsk_error_get_errno());
-            tsk_error_reset();
         }
     }
 

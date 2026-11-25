@@ -117,37 +117,6 @@ entry_of(const tskval::Manifest &m, const std::string &path)
     return m.entries.front();
 }
 
-// The directories of the larger formats, which are not listed yet (#41).
-const char *const LARGER_DIRS[] = {"/dirs/leaf", "/dirs/node", "/dirs/btree"};
-
-// Whether `path` is below a directory of LARGER_DIRS.
-inline bool
-below_larger_dir(const std::string &path)
-{
-    for (const char *dir : LARGER_DIRS) {
-        const std::string prefix = std::string(dir) + "/";
-        if (path.compare(0, prefix.size(), prefix) == 0) {
-            return true;
-        }
-    }
-    return false;
-}
-
-// One "missing" Known failure for each entry of `m` below a directory of
-// LARGER_DIRS: a walk can't reach them yet (#41).
-inline std::string
-larger_dirs_missing(const tskval::Manifest &m)
-{
-    std::string out;
-    for (const tskval::Entry &e : m.entries) {
-        if (below_larger_dir(e.path)) {
-            out += tskval::encode_bytes(e.path) +
-                " missing leaf, node and B+tree directories come in #41\n";
-        }
-    }
-    return out;
-}
-
 } // namespace fstest
 
 #endif
