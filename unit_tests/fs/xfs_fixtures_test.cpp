@@ -245,8 +245,8 @@ class XfsFixturesTest : public CppUnit::TestFixture {
 
     // The validate command's walk of each image (the harness's, through
     // directories of every format) matches the Manifest: no entry missing,
-    // extra or twice, except for inode fields that later tickets read (#43,
-    // #50).
+    // extra or twice, and every field matches, except for a crtime of 0
+    // (#50).
     void testWalkMatchesManifest()
     {
         for (const Fixture &f : fstest::ALL_FIXTURES) {

@@ -89,19 +89,14 @@ read_manifest(const Fixture &f)
 }
 
 // The differences from a Fixture's Manifest that its comparison tolerates,
-// in check_walk's Known failure format: symlink targets are not read yet
-// (#43), and the harness records a crtime of 0 as no crtime (libtsk has no
-// other way to say there is none), so a v5 inode created at the epoch
-// differs (#50).
+// in check_walk's Known failure format: the harness records a crtime of 0 as
+// no crtime (libtsk has no other way to say there is none), so a v5 inode
+// created at the epoch differs (#50; xfs_link_test.cpp checks it directly).
 inline std::string
 inode_known_failures(const Fixture &f)
 {
-    std::string out = "/symlink-short target symlink targets come in #43\n"
-                      "/symlink-long target symlink targets come in #43\n";
-    if (f.version == 5) {
-        out += "/times/epoch crtime crtime 0 reads as none (#50)\n";
-    }
-    return out;
+    return f.version == 5 ? "/times/epoch crtime crtime 0 reads as none (#50)\n"
+                          : "";
 }
 
 // The Manifest's entry for `path`; asserts that there is one.
