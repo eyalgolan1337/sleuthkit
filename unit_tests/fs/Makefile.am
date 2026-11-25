@@ -4,10 +4,11 @@
 #
 # The helper walks images with the validation setup's harness and compares the
 # walk with the comparison step (test/vm/harness/, test/vm/manifest/), so it
-# reads and reports the same way as the validate command.
+# reads and reports the same way as the validate command. The istat tests
+# parse istat's output with the CLI tool checks' parser (test/vm/toolcheck/).
 VM_DIR = $(top_srcdir)/test/vm
 AM_CPPFLAGS = -I$(top_builddir) -I$(top_srcdir) -I$(VM_DIR)/manifest \
-    -I$(VM_DIR)/harness $(CPPUNIT_CFLAGS) \
+    -I$(VM_DIR)/harness -I$(VM_DIR)/toolcheck $(CPPUNIT_CFLAGS) \
     -DFS_TEST_DATA_DIR='"$(abs_builddir)"'
 AM_CXXFLAGS += -Wno-unused-command-line-argument
 LDADD = ../../tsk/libtsk.la $(CPPUNIT_LIBS)
@@ -19,8 +20,10 @@ check_PROGRAMS = test_fs
 
 test_fs_SOURCES = test_fs.cpp fs_test_data.h fs_test_util.h \
     manifest_check.cpp manifest_check.h manifest_check_test.cpp \
-    xfs_fixtures_test.cpp xfs_superblock_test.cpp \
-    vm_harness.cpp vm_manifest.cpp vm_compare.cpp vm_sha256.cpp
+    xfs_fixture_data.h xfs_fixtures_test.cpp xfs_inode_test.cpp \
+    xfs_superblock_test.cpp \
+    vm_harness.cpp vm_manifest.cpp vm_compare.cpp vm_sha256.cpp \
+    vm_toolcheck.cpp
 
 # Test data, made before the tests run: the Fixture images and their expected
 # Manifests unpacked into xfs/ (xz -d writes the images sparse), and the ext
@@ -58,4 +61,5 @@ CLEANFILES = xfs-fixtures.stamp ext-small.img
 MAINTAINERCLEANFILES = Makefile.in
 
 clean-local:
-	-rm -rf xfs xfs.tmp ext-small.img.tmp ext-small.img.tmp.d xfs-sb-*.img
+	-rm -rf xfs xfs.tmp ext-small.img.tmp ext-small.img.tmp.d xfs-sb-*.img \
+	    xfs-inode-*.img

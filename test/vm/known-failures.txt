@@ -15,10 +15,10 @@
 # sda5 /data-compat, sda6 /control, the Control file system).
 
 # check        partition  subject  difference     comment
-strict-guest   sda4       *        error:root     /data is XFS: inode lookup not implemented yet, so the root can't be read (#39)
-strict-guest   sda5       *        error:root     /data-compat is XFS: inode lookup not implemented yet, so the root can't be read (#39)
-strict-host    sda4       *        error:root     /data is XFS: inode lookup not implemented yet, so the root can't be read (#39)
-strict-host    sda5       *        error:root     /data-compat is XFS: inode lookup not implemented yet, so the root can't be read (#39)
+strict-guest   sda4       *        missing        /data is XFS: the root inode reads, but directories can't be listed yet, so every other entry is missing (#40)
+strict-guest   sda5       *        missing        /data-compat is XFS: the root inode reads, but directories can't be listed yet, so every other entry is missing (#40)
+strict-host    sda4       *        missing        /data is XFS: the root inode reads, but directories can't be listed yet, so every other entry is missing (#40)
+strict-host    sda5       *        missing        /data-compat is XFS: the root inode reads, but directories can't be listed yet, so every other entry is missing (#40)
 
 # The Test corpus on the Control file system (ext4): libtsk ext4 defects it
 # exposes (#19). The same on both sides.
@@ -50,14 +50,14 @@ fls-guest      sda4       *        error:tool-failed  /data is XFS: directory li
 fls-guest      sda5       *        error:tool-failed  /data-compat is XFS: directory listing not implemented yet (#40)
 fls-host       sda4       *        error:tool-failed  /data is XFS: directory listing not implemented yet (#40)
 fls-host       sda5       *        error:tool-failed  /data-compat is XFS: directory listing not implemented yet (#40)
-icat-guest     sda4       *        error:tool-failed  /data is XFS: icat of the root directory needs inode lookup (#39) and short-form directory content (#40)
-icat-guest     sda5       *        error:tool-failed  /data-compat is XFS: icat of the root directory needs inode lookup (#39) and short-form directory content (#40)
-icat-host      sda4       *        error:tool-failed  /data is XFS: icat of the root directory needs inode lookup (#39) and short-form directory content (#40)
-icat-host      sda5       *        error:tool-failed  /data-compat is XFS: icat of the root directory needs inode lookup (#39) and short-form directory content (#40)
-istat-guest    sda4       *        missing        /data is XFS: istat not implemented yet, so every spot check fails (#39)
-istat-guest    sda5       *        missing        /data-compat is XFS: istat not implemented yet, so every spot check fails (#39)
-istat-host     sda4       *        missing        /data is XFS: istat not implemented yet, so every spot check fails (#39)
-istat-host     sda5       *        missing        /data-compat is XFS: istat not implemented yet, so every spot check fails (#39)
+icat-guest     sda4       /corpus/fragmented/extents.bin  sha256  /data is XFS: a file whose extent map is a B+tree can't be read yet (#42)
+icat-guest     sda5       /corpus/fragmented/extents.bin  sha256  /data-compat is XFS: a file whose extent map is a B+tree can't be read yet (#42)
+icat-host      sda4       /corpus/fragmented/extents.bin  sha256  /data is XFS: a file whose extent map is a B+tree can't be read yet (#42)
+icat-host      sda5       /corpus/fragmented/extents.bin  sha256  /data-compat is XFS: a file whose extent map is a B+tree can't be read yet (#42)
+istat-guest    sda4       /corpus/links/short-symlink  target  /data is XFS: symlink targets not read yet (#43)
+istat-guest    sda5       /corpus/links/short-symlink  target  /data-compat is XFS: symlink targets not read yet (#43)
+istat-host     sda4       /corpus/links/short-symlink  target  /data is XFS: symlink targets not read yet (#43)
+istat-host     sda5       /corpus/links/short-symlink  target  /data-compat is XFS: symlink targets not read yet (#43)
 
 # The same phantom names in fls's listing (the CLI tool checks).
 fls-guest      sda6       /corpus/dirs/btree/C                          extra   phantom name from an htree dx_node block parsed as dirents (#32)
@@ -75,7 +75,7 @@ fls-host       sda6       /corpus/special/socket                        type    
 
 # Gate 4, Best-effort checks.
 # check            partition  subject  difference     comment
-best-effort-guest  sda2       *        error:root     /boot is XFS: inode lookup not implemented yet, so the root can't be read (#39)
-best-effort-guest  sda3       *        error:root     / is XFS: inode lookup not implemented yet, so the root can't be read (#39)
-best-effort-host   sda2       *        error:root     /boot is XFS: inode lookup not implemented yet, so the root can't be read (#39)
-best-effort-host   sda3       *        error:root     / is XFS: inode lookup not implemented yet, so the root can't be read (#39)
+best-effort-guest  sda2       *        missing        /boot is XFS: the root inode reads, but directories can't be listed yet, so every other entry is missing (#40)
+best-effort-guest  sda3       *        missing        / is XFS: the root inode reads, but directories can't be listed yet, so every other entry is missing (#40)
+best-effort-host   sda2       *        missing        /boot is XFS: the root inode reads, but directories can't be listed yet, so every other entry is missing (#40)
+best-effort-host   sda3       *        missing        / is XFS: the root inode reads, but directories can't be listed yet, so every other entry is missing (#40)

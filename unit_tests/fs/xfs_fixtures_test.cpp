@@ -8,6 +8,7 @@
 #include "fs_test_data.h"
 #include "fs_test_util.h"
 #include "manifest_check.h"
+#include "xfs_fixture_data.h"
 
 #include "manifest.h"
 
@@ -28,34 +29,14 @@ using fstest::fsstat_value;
 using fstest::ImgPtr;
 using fstest::open_image;
 
-// One Fixture image and what mkfs.xfs made of it: the mkfs.xfs options and
-// the xfs_info output in the comment at the top of its Manifest.
-struct Fixture {
-    const char *variant;
-    size_t entries;   // test/vm/README.md, "XFS fixture images"
-    const char *uuid; // -m uuid=
-    unsigned version; // crc=1: 5, crc=0: 4
-    unsigned block_size;
-    uint64_t blocks;
-    unsigned inode_size;
-    unsigned ag_count;
-    unsigned ag_blocks;
-    // From xfs_db on the image, independently of libtsk: the largest inode
-    // number the geometry allows (convert agno <last> agbno <last block of
-    // the last AG> inoidx <inodes per block - 1> inode).
-    uint64_t max_inode;
-};
-
-const Fixture V4 = {"v4", 1006, "5f4b0c1e-0000-4000-8000-000000000004", 4, 4096,
-    81920, 256, 4, 20480, 0x1cffff};
-const Fixture V4_512 = {"v4-512", 1006, "5f4b0c1e-0000-4000-8000-000000000512",
-    4, 512, 655360, 256, 4, 163840, 0x1cffff};
-const Fixture V5_1K = {"v5-1k", 1181, "5f4b0c1e-0000-4000-8000-000000001024", 5,
-    1024, 327680, 512, 4, 81920, 0xe7fff};
-const Fixture V5_64K = {"v5-64k", 18821, "5f4b0c1e-0000-4000-8000-000000065536",
-    5, 65536, 8192, 512, 4, 2048, 0xfffff};
-const Fixture V5 = {"v5", 1181, "5f4b0c1e-0000-4000-8000-000000000005", 5, 4096,
-    81920, 512, 4, 20480, 0xe7fff};
+using fstest::Fixture;
+using fstest::image_path;
+using fstest::read_manifest;
+using fstest::V4;
+using fstest::V4_512;
+using fstest::V5;
+using fstest::V5_1K;
+using fstest::V5_64K;
 
 // The volume ID as a canonical UUID ("" unless it has 16 bytes).
 std::string
@@ -74,29 +55,6 @@ volume_id(const TSK_FS_INFO *fs)
         out += hex;
     }
     return out;
-}
-
-std::string
-image_path(const Fixture &f)
-{
-    return fstest::data_path(std::string("xfs/") + f.variant + ".img");
-}
-
-tskval::Manifest
-read_manifest(const Fixture &f)
-{
-    const std::string path =
-        fstest::data_path(std::string("xfs/") + f.variant + ".manifest");
-    std::ifstream in(path, std::ios::binary);
-    CPPUNIT_ASSERT_MESSAGE(path + ": no unpacked Manifest", in.good());
-    tskval::Manifest manifest;
-    std::string error;
-    const bool read = tskval::read_manifest(in, manifest, error);
-    CPPUNIT_ASSERT_MESSAGE(path + ": " + error, read);
-    CPPUNIT_ASSERT_MESSAGE(path + ": Manifest has !error", !manifest.has_error);
-    CPPUNIT_ASSERT_EQUAL_MESSAGE(
-        path + ": Manifest entries", f.entries, manifest.entries.size());
-    return manifest;
 }
 
 uint64_t
@@ -118,7 +76,7 @@ class XfsFixturesTest : public CppUnit::TestFixture {
     CPPUNIT_TEST(testGeometry);
     CPPUNIT_TEST(testFsstat);
     CPPUNIT_TEST(testLaterStepsFailWithTskErrors);
-    CPPUNIT_TEST(testWalkFailsAtTheRoot);
+    CPPUNIT_TEST(testWalkStopsAtTheRootDirectory);
     CPPUNIT_TEST_SUITE_END();
 
   public:
@@ -253,8 +211,7 @@ class XfsFixturesTest : public CppUnit::TestFixture {
     }
 
     // What later steps of #11 implement fails with a TSK error, not a crash:
-    // inode lookup (#39), directories (#40), istat (#39), the inode and
-    // block walks (#44).
+    // directories (#40), the inode and block walks (#44).
     void testLaterStepsFailWithTskErrors()
     {
         for (const Fixture &f : {V4, V5}) {
@@ -271,11 +228,6 @@ class XfsFixturesTest : public CppUnit::TestFixture {
             };
 
             tsk_error_reset();
-            TSK_FS_FILE *file =
-                tsk_fs_file_open_meta(fs.get(), nullptr, fs->root_inum);
-            CPPUNIT_ASSERT_MESSAGE(v + ": inode lookup", file == nullptr);
-            failed("inode lookup");
-
             TSK_FS_DIR *dir = tsk_fs_dir_open_meta(fs.get(), fs->root_inum);
             CPPUNIT_ASSERT_MESSAGE(v + ": directory open", dir == nullptr);
             failed("directory open");
@@ -296,22 +248,14 @@ class XfsFixturesTest : public CppUnit::TestFixture {
                     tsk_fs_block_walk(fs.get(), fs->first_block, fs->last_block,
                         TSK_FS_BLOCK_WALK_FLAG_ALLOC, ignore_block, nullptr)));
             failed("block walk");
-
-            FILE *devnull = tmpfile();
-            CPPUNIT_ASSERT(devnull != nullptr);
-            const uint8_t istat = fs->istat(
-                fs.get(), TSK_FS_ISTAT_NONE, devnull, fs->root_inum, 0, 0);
-            fclose(devnull);
-            CPPUNIT_ASSERT_EQUAL_MESSAGE(
-                v + ": istat", 1, static_cast<int>(istat));
-            failed("istat");
         }
     }
 
     // The validate command's walk of each image opens the file system and
-    // fails as a whole at the root directory's inode (#39 reads it), with
-    // the Manifest's entries still expected.
-    void testWalkFailsAtTheRoot()
+    // the root directory's inode, which matches the Manifest's "/", and stops
+    // at the root's entries (#40 reads directories): every other entry of
+    // the Manifest is missing.
+    void testWalkStopsAtTheRootDirectory()
     {
         for (const Fixture &f : {V4, V4_512, V5_1K, V5_64K, V5}) {
             const std::string v = f.variant;
@@ -321,9 +265,11 @@ class XfsFixturesTest : public CppUnit::TestFixture {
             CPPUNIT_ASSERT_MESSAGE(v + ": " + walk.report, !walk.passed);
             const fstest::WalkCheck tolerated =
                 fstest::check_walk(image_path(f), manifest,
-                    "* error:root XFS inode lookup comes in #39\n");
+                    "* missing XFS directories come in #40\n");
             CPPUNIT_ASSERT_MESSAGE(
                 v + ": " + tolerated.report, tolerated.passed);
+            CPPUNIT_ASSERT_EQUAL_MESSAGE(v + ": entries walked", size_t{1},
+                tolerated.result.run_entries);
         }
     }
 

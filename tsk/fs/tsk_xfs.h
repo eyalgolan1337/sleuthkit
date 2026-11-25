@@ -143,16 +143,139 @@ typedef struct {
     uint8_t sb_meta_uuid[16];
 } xfs_dsb;
 
+/* --- Inodes (xfs_format.h, struct xfs_dinode) --- */
+
+/* Inode magic, "IN". */
+#define XFS_DINODE_MAGIC 0x494e
+
+/* di_format: how a fork stores its data. */
+#define XFS_DINODE_FMT_DEV 0     /* device number, no data */
+#define XFS_DINODE_FMT_LOCAL 1   /* the data itself, in the fork */
+#define XFS_DINODE_FMT_EXTENTS 2 /* an array of extent records */
+#define XFS_DINODE_FMT_BTREE 3   /* the root of an extent B+tree */
+
+/* di_flags2 (v3 inodes). */
+#define XFS_DIFLAG2_BIGTIME 0x08 /* timestamps are bigtime */
+#define XFS_DIFLAG2_NREXT64 0x10 /* 64-bit data fork extent count */
+
+/* A bigtime timestamp counts nanoseconds from this many seconds before the
+ * Unix epoch (-INT32_MIN, the earliest classic timestamp). */
+#define XFS_BIGTIME_EPOCH_OFFSET 2147483648LL
+
+/* Size of the inode core: the data fork starts right after it. */
+#define XFS_DINODE_CORE_SIZE_V2 100 /* di_version 1 and 2 */
+#define XFS_DINODE_CORE_SIZE_V3 176 /* di_version 3 (v5 file systems) */
+
+/* A timestamp: big-endian seconds (signed, 4 bytes) then nanoseconds (4
+ * bytes), or with XFS_DIFLAG2_BIGTIME one big-endian 64-bit count of
+ * nanoseconds. */
+typedef struct {
+    uint8_t t[8];
+} xfs_timestamp;
+
+/* The inode core. v1 and v2 inodes end at di_crc. */
+typedef struct {
+    uint8_t di_magic[2];
+    uint8_t di_mode[2];
+    uint8_t di_version;
+    uint8_t di_format;    /* data fork format */
+    uint8_t di_onlink[2]; /* link count of v1 inodes */
+    uint8_t di_uid[4];
+    uint8_t di_gid[4];
+    uint8_t di_nlink[4]; /* link count of v2 and v3 inodes */
+    uint8_t di_projid_lo[2];
+    uint8_t di_projid_hi[2];
+    uint8_t di_big_nextents[8]; /* with XFS_DIFLAG2_NREXT64; else padding */
+    xfs_timestamp di_atime;
+    xfs_timestamp di_mtime;
+    xfs_timestamp di_ctime;
+    uint8_t di_size[8];
+    uint8_t di_nblocks[8];
+    uint8_t di_extsize[4];
+    uint8_t di_nextents[4]; /* without XFS_DIFLAG2_NREXT64 */
+    uint8_t di_anextents[2];
+    uint8_t di_forkoff; /* attr fork offset in 8-byte units; 0: none */
+    uint8_t di_aformat;
+    uint8_t di_dmevmask[4];
+    uint8_t di_dmstate[2];
+    uint8_t di_flags[2];
+    uint8_t di_gen[4];
+    uint8_t di_next_unlinked[4];
+    /* v3 from here */
+    uint8_t di_crc[4];
+    uint8_t di_changecount[8];
+    uint8_t di_lsn[8];
+    uint8_t di_flags2[8];
+    uint8_t di_cowextsize[4];
+    uint8_t di_pad2[12];
+    xfs_timestamp di_crtime;
+    uint8_t di_ino[8];
+    uint8_t di_uuid[16];
+} xfs_dinode;
+
+/* An extent record (xfs_bmbt_rec): 128 bits, big-endian, from the top: the
+ * unwritten flag (1), the file offset in blocks (54), the start fsblock (52)
+ * and the length in blocks (21). */
+typedef struct {
+    uint8_t l0[8];
+    uint8_t l1[8];
+} xfs_bmbt_rec;
+
+/* --- Inode allocation (xfs_format.h) --- */
+
+/* The AGI, the AG's inode header, in its third sector. Only its start, the
+ * fields read here. */
+#define XFS_AGI_MAGIC 0x58414749 /* "XAGI" */
+#define XFS_AGI_VERSION 1
+#define XFS_AGI_SECTOR 2
+typedef struct {
+    uint8_t agi_magicnum[4];
+    uint8_t agi_versionnum[4];
+    uint8_t agi_seqno[4]; /* AG number */
+    uint8_t agi_length[4];
+    uint8_t agi_count[4];
+    uint8_t agi_root[4];  /* inode B+tree root, an AG block */
+    uint8_t agi_level[4]; /* inode B+tree levels */
+} xfs_agi;
+
+/* Inode B+tree blocks: a short-form B+tree block header (16 bytes, 56 on
+ * v5 with the CRC fields), then keys and pointers (nodes) or records
+ * (leaves). */
+#define XFS_IBT_MAGIC 0x49414254     /* "IABT" */
+#define XFS_IBT_CRC_MAGIC 0x49414233 /* "IAB3" */
+#define XFS_BTREE_SBLOCK_LEN 16
+#define XFS_BTREE_SBLOCK_CRC_LEN 56
+#define XFS_BTREE_MAXLEVELS 9
+typedef struct {
+    uint8_t bb_magic[4];
+    uint8_t bb_level[2]; /* 0 for a leaf */
+    uint8_t bb_numrecs[2];
+} xfs_btree_sblock;
+
+/* An inode B+tree record: a chunk of 64 inodes and which of them are free
+ * (bit i of ir_free for inode ir_startino + i; holes of a sparse chunk are
+ * free too). A node's key is an ir_startino, its pointer an AG block, both
+ * 4 bytes. */
+#define XFS_INODES_PER_CHUNK 64
+typedef struct {
+    uint8_t ir_startino[4];
+    uint8_t ir_counts[4]; /* free count, or sparse holemask and counts */
+    uint8_t ir_free[8];
+} xfs_inobt_rec;
+
 /* The file system handle. */
 typedef struct {
     TSK_FS_INFO fs_info; /* must be first */
     xfs_dsb sb;          /* the primary superblock, as on disk */
 
     /* Superblock values the module uses, in host order. */
-    uint16_t version;  /* 4 or 5 */
-    uint32_t agblocks; /* blocks per AG (the last AG may be shorter) */
-    uint8_t agblklog;  /* bits of the AG block number in an fsblock */
-    uint8_t inopblog;  /* bits of the inode-in-block number */
+    uint16_t version;   /* 4 or 5 */
+    uint32_t agblocks;  /* blocks per AG (the last AG may be shorter) */
+    uint32_t agcount;   /* number of AGs */
+    uint16_t sectsize;  /* sector size in bytes */
+    uint16_t inodesize; /* inode size in bytes */
+    uint8_t agblklog;   /* bits of the AG block number in an fsblock */
+    uint8_t inopblog;   /* bits of the inode-in-block number */
 } XFS_INFO;
 
 #ifdef __cplusplus
