@@ -18,10 +18,6 @@
  *   low bits. Most numbers in the range are not inodes. last_inum is one past
  *   the largest inode number the geometry allows, for $OrphanFiles.
  *
- * Message and output strings are those of the earlier XFS module of TSK
- * (develop-4.13) or labels the other file systems' fsstat already prints;
- * an error with no such string carries only its TSK error number.
- *
  * C++14. Nothing here throws: no C++ exception can reach the C callers.
  */
 
