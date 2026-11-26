@@ -143,6 +143,19 @@ typedef struct {
     uint8_t sb_meta_uuid[16];
 } xfs_dsb;
 
+/* --- Checksums (v5) --- */
+
+/* v5 metadata has a CRC-32C of the whole structure (a sector, a block, an
+ * inode, a directory block, a symlink extent), computed with the checksum
+ * field as zeros and stored little-endian at these byte offsets. */
+#define XFS_SB_CRC_OFF 224
+#define XFS_AGI_CRC_OFF 312
+#define XFS_DINODE_CRC_OFF 100
+#define XFS_BTREE_SBLOCK_CRC_OFF 52
+#define XFS_BTREE_LBLOCK_CRC_OFF 64
+#define XFS_DIR3_DATA_CRC_OFF 4
+#define XFS_SYMLINK_CRC_OFF 12
+
 /* --- Inodes (xfs_format.h, struct xfs_dinode) --- */
 
 /* Inode magic, "IN". */
@@ -250,6 +263,9 @@ typedef struct {
 /* On v5, each extent of a remote symlink starts with this header; the
  * target's bytes follow. v4 blocks hold the bytes alone. */
 #define XFS_SYMLINK_MAGIC 0x58534c4d /* "XSLM" */
+/* The most blocks an extent of a remote symlink has: a target and its
+ * header fit in two of the smallest v5 blocks. */
+#define XFS_SYMLINK_MAXEXTLEN 2
 typedef struct {
     uint8_t sl_magic[4];
     uint8_t sl_offset[4]; /* of this piece in the target */
@@ -408,6 +424,20 @@ set_corrupt()
     tsk_error_set_errno(TSK_ERR_FS_CORRUPT);
 }
 
+/* Whether checksums are verified: on v5, and only when the result can be
+ * reported, which is in the verbose output. A wrong checksum is a warning
+ * there; what was read is used all the same. */
+inline bool
+cksum_wanted(const XFS_INFO *xfs)
+{
+    return tsk_verbose != 0 && xfs->version == XFS_SB_VERSION_5;
+}
+
+/* xfs.cpp */
+bool cksum_good(const uint8_t *buf, size_t len, size_t crc_off);
+void check_block_cksum(const XFS_INFO *xfs, const uint8_t *buf, size_t len,
+    size_t crc_off, TSK_DADDR_T addr);
+
 /* The fields of a raw inode (the inode size of the file system, as on disk)
  * that the module uses, in host order. */
 struct DinodeView {
@@ -423,6 +453,7 @@ struct DinodeView {
 };
 
 /* xfs_meta.cpp */
+bool inum_in_fs(const XFS_INFO *xfs, TSK_INUM_T inum);
 DinodeView dinode_view(const XFS_INFO *xfs, const uint8_t *raw);
 uint8_t xfs_inode_lookup(
     TSK_FS_INFO *fs, TSK_FS_FILE *a_fs_file, TSK_INUM_T inum);

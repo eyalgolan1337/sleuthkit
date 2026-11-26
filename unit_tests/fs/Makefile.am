@@ -22,7 +22,7 @@ test_fs_SOURCES = test_fs.cpp fs_test_data.h fs_test_util.h \
     manifest_check.cpp manifest_check.h manifest_check_test.cpp \
     xfs_fixture_data.h xfs_fixtures_test.cpp xfs_inode_test.cpp \
     xfs_dir_test.cpp xfs_file_test.cpp xfs_link_test.cpp \
-    xfs_superblock_test.cpp xfs_walk_test.cpp \
+    xfs_superblock_test.cpp xfs_walk_test.cpp xfs_corrupt_test.cpp \
     vm_harness.cpp vm_manifest.cpp vm_compare.cpp vm_sha256.cpp \
     vm_toolcheck.cpp
 
@@ -66,4 +66,4 @@ MAINTAINERCLEANFILES = Makefile.in
 clean-local:
 	-rm -rf xfs xfs.tmp ext-small.img.tmp ext-small.img.tmp.d xfs-sb-*.img \
 	    xfs-inode-*.img xfs-dir-*.img xfs-file-*.img xfs-link-*.img \
-	    xfs-walk-*.img
+	    xfs-walk-*.img xfs-corrupt-*.img

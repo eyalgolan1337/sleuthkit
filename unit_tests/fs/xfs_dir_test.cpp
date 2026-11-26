@@ -775,7 +775,9 @@ class XfsDirTest : public CppUnit::TestFixture {
     // A short-form directory with 8-byte inode numbers (i8count not 0,
     // which inode numbers above 2^32 need): the parent and every entry are
     // 8 bytes, and are listed as stored. The top byte is not part of the
-    // number (the kernel masks it off).
+    // number (the kernel masks it off). The Fixture has no inode above 2^32:
+    // the entries name its own inodes, and a number above 2^32, in no AG,
+    // makes the directory corrupt (#45).
     void testShortformEightByteInodes()
     {
         const Fixture &f = fstest::V4;
@@ -792,10 +794,10 @@ class XfsDirTest : public CppUnit::TestFixture {
             }
         };
         put_ino(parent | (uint64_t{0xff} << 56));
-        const uint64_t high = (uint64_t{1} << 40) + 5;
         const uint64_t inodes[] = {
             entry_of(m, "/dirs/shortform/s000000s").inode,
-            entry_of(m, "/dirs/shortform/s000001s").inode, high};
+            entry_of(m, "/dirs/shortform/s000001s").inode,
+            entry_of(m, "/dirs/block").inode | (uint64_t{0xff} << 56)};
         for (int i = 0; i < 3; ++i) {
             const std::string name = "e" + std::to_string(i);
             sf.push_back(static_cast<uint8_t>(name.size()));
@@ -816,9 +818,20 @@ class XfsDirTest : public CppUnit::TestFixture {
         CPPUNIT_ASSERT_EQUAL(parent, got.at("..").inode);
         CPPUNIT_ASSERT_EQUAL(inodes[0], got.at("e0").inode);
         CPPUNIT_ASSERT_EQUAL(inodes[1], got.at("e1").inode);
-        CPPUNIT_ASSERT_EQUAL(high, got.at("e2").inode);
+        CPPUNIT_ASSERT_EQUAL(
+            entry_of(m, "/dirs/block").inode, got.at("e2").inode);
+
         CPPUNIT_ASSERT_EQUAL(static_cast<int>(TSK_FS_NAME_TYPE_REG),
             static_cast<int>(got.at("e2").type));
+
+        // The last entry's inode number (its last 8 bytes) above 2^32.
+        std::vector<uint8_t> high(8, 0);
+        put_be32(high, 0, 0x100);
+        put_be32(high, 4, 5);
+        img.patch(ino + V4_FORK + sf.size() - 8, high);
+        OpenedFs damaged(img.path());
+        check_open_fails(damaged.fs.get(), entry_of(m, "/dirs/shortform").inode,
+            TSK_ERR_FS_CORRUPT, "inode number in no AG");
     }
 
     // File types the Fixtures don't have: a socket, a whiteout, and a
