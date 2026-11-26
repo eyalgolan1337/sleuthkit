@@ -101,7 +101,7 @@ gate1_guest_build() {
         item_fail "the static guest build failed; see the log"
         return 1
     fi
-    item_note "built fls, icat, fsstat, istat, tsk-harness, capture-ground-truth and tsk-corpus, statically linked, in build/guest-static/bin"
+    item_note "built fls, icat, fsstat, istat, ils, ifind, blkls, tsk-harness, capture-ground-truth, tsk-corpus and check-tool, statically linked, in build/guest-static/bin"
 }
 
 # The Known failure list as a whole. Each comparison of gates 3 and 4 reads

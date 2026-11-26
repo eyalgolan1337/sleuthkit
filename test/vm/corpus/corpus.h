@@ -49,6 +49,10 @@ struct CorpusOptions {
     uint64_t large_size = 0;
     // Entries of the B+tree directory, /dirs/btree.
     unsigned btree_entries = 50000;
+    // Empty files made in /churn, of which every other one is deleted again,
+    // last of all, so that the free inodes left behind were once in use and
+    // their chunks stay partly used. 0: no /churn.
+    unsigned churn_files = 0;
 };
 
 // One line of the generator's record: a feature it made, one it could not
@@ -67,6 +71,11 @@ struct RecordLine {
 bool generate_corpus(const std::string &dir, const CorpusOptions &options,
     std::vector<RecordLine> &record);
 
+// The same, and the inode numbers of the files the churn deleted, in the
+// order it deleted them.
+bool generate_corpus(const std::string &dir, const CorpusOptions &options,
+    std::vector<RecordLine> &record, std::vector<uint64_t> &deleted_inodes);
+
 // Record lines as the command prints them: "made", "not-made" or "failed",
 // a tab, the feature, a tab, the detail.
 std::string format_record_line(const RecordLine &line);
@@ -78,7 +87,9 @@ enum CorpusExit {
     CORPUS_USAGE = 2   // bad usage, or the target is not empty
 };
 
-// tsk-corpus [--seed N] --large-size BYTES[K|M|G] [--btree-entries N] DIR.
+// tsk-corpus [--seed N] --large-size BYTES[K|M|G] [--btree-entries N]
+//            [--churn N] [--deleted-inodes FILE] DIR.
+// FILE gets the churn's deleted inode numbers, one per line.
 // args excludes the program name. The record goes to `out`, errors to `err`.
 int corpus_cli(
     const std::vector<std::string> &args, std::ostream &out, std::ostream &err);

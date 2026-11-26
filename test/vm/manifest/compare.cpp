@@ -17,7 +17,7 @@ const size_t NUM_COMPARED_FIELDS =
     sizeof(COMPARED_FIELDS) / sizeof(COMPARED_FIELDS[0]);
 const int64_t RECENT_CTIME_SECONDS = 10 * 60;
 const char *const SUMMARY_FIELDS[] = {"fs-type", "block-size", "inode-size",
-    "group-count", "uuid", "label", "version"};
+    "group-count", "uuid", "label", "version", "block-count"};
 const size_t NUM_SUMMARY_FIELDS =
     sizeof(SUMMARY_FIELDS) / sizeof(SUMMARY_FIELDS[0]);
 

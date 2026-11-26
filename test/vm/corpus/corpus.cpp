@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <cstring>
 #include <ctime>
+#include <fstream>
 #include <iostream>
 #include <memory>
 #include <sstream>
@@ -236,8 +237,8 @@ const TimeCase AFTER_2038[] = {
 class Generator {
   public:
     Generator(const std::string &root, const CorpusOptions &opt,
-        std::vector<RecordLine> &record)
-        : m_root(root), m_opt(opt), m_record(record)
+        std::vector<RecordLine> &record, std::vector<uint64_t> &deleted)
+        : m_root(root), m_opt(opt), m_record(record), m_deleted(deleted)
     {}
 
     void run();
@@ -246,6 +247,7 @@ class Generator {
     std::string m_root;
     const CorpusOptions &m_opt;
     std::vector<RecordLine> &m_record;
+    std::vector<uint64_t> &m_deleted;
     int m_rootfd = -1;
 
     // Each created object's times, applied at the end, deepest first, so a
@@ -438,6 +440,7 @@ class Generator {
     void times();
     void special();
     void owners();
+    void churn();
     void apply_times();
 };
 
@@ -873,6 +876,57 @@ Generator::apply_times()
         "nanoseconds (ctime and crtime can't be set)");
 }
 
+// Free inodes that were once in use, in partly used inode chunks:
+// churn_files empty files in /churn, then every odd-numbered one deleted
+// again, their inode numbers kept for the ils check. Last of all, so nothing
+// made later reuses the freed inodes; all created before any is deleted, so
+// they fill their chunks in order and every chunk keeps half of its inodes.
+// One directory: on XFS a file's inode goes to its directory's AG, whose
+// inode B+tree gets interior levels once its chunks outgrow one leaf (252
+// records in a 4 KiB v5 block, about 16,000 inodes).
+void
+Generator::churn()
+{
+    if (m_opt.churn_files == 0) {
+        not_made("churn", "not asked for (--churn 0)");
+        return;
+    }
+    make_dir("churn");
+    std::vector<std::string> doomed;
+    for (unsigned i = 0; i < m_opt.churn_files; ++i) {
+        char name[32];
+        std::snprintf(name, sizeof name, "churn/f%05u", i);
+        const std::string rel = name;
+        int fd = -1;
+        if (i % 2 == 0) {
+            fd = create(rel);
+        }
+        else {
+            // No times: it won't exist when they are applied.
+            fd = openat(m_rootfd, rel.c_str(),
+                O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0644);
+            if (fd < 0)
+                fail(rel, "create", errno);
+            struct stat st;
+            if (fstat(fd, &st) != 0) {
+                int e = errno;
+                close(fd);
+                fail(rel, "stat", e);
+            }
+            m_deleted.push_back(static_cast<uint64_t>(st.st_ino));
+            doomed.push_back(rel);
+        }
+        close(fd);
+    }
+    for (const std::string &rel : doomed)
+        if (unlinkat(m_rootfd, rel.c_str(), 0) != 0)
+            fail(rel, "unlink", errno);
+    made("churn",
+        "/churn: " + std::to_string(m_opt.churn_files) +
+            " empty files, every other one deleted (" +
+            std::to_string(m_opt.churn_files - doomed.size()) + " left)");
+}
+
 void
 Generator::run()
 {
@@ -901,6 +955,7 @@ Generator::run()
     special();
     owners();
     make_dir("empty-dir");
+    churn();
     apply_times();
     if (syncfs(m_rootfd) != 0)
         throw GenError(m_root + ": syncfs: " + errno_text(errno));
@@ -950,6 +1005,14 @@ bool
 generate_corpus(const std::string &dir, const CorpusOptions &options,
     std::vector<RecordLine> &record)
 {
+    std::vector<uint64_t> deleted;
+    return generate_corpus(dir, options, record, deleted);
+}
+
+bool
+generate_corpus(const std::string &dir, const CorpusOptions &options,
+    std::vector<RecordLine> &record, std::vector<uint64_t> &deleted_inodes)
+{
     std::string why;
     if (!prepare_target(dir, why)) {
         record.push_back({RecordLine::Failed, "target", why});
@@ -959,7 +1022,7 @@ generate_corpus(const std::string &dir, const CorpusOptions &options,
     mode_t old_umask = umask(0);
     bool ok = true;
     try {
-        Generator(dir, options, record).run();
+        Generator(dir, options, record, deleted_inodes).run();
     }
     catch (const GenError &e) {
         record.push_back({RecordLine::Failed, "corpus", e.what()});
@@ -975,9 +1038,12 @@ generate_corpus(const std::string &dir, const CorpusOptions &options,
 namespace {
 
 const char USAGE[] =
-    "usage: tsk-corpus [--seed N] --large-size SIZE [--btree-entries N] DIR\n"
+    "usage: tsk-corpus [--seed N] --large-size SIZE [--btree-entries N]\n"
+    "                  [--churn N] [--deleted-inodes FILE] DIR\n"
     "Writes the Test corpus into DIR (empty, or created). SIZE is the size of\n"
     "/files/large.bin in bytes, or with a K, M or G suffix (KiB, MiB, GiB).\n"
+    "--churn makes N empty files in /churn and deletes every other one;\n"
+    "FILE gets the deleted inode numbers, one per line.\n"
     "Prints the record: one line per feature, made or not-made, and why.\n";
 
 bool
@@ -1019,6 +1085,7 @@ corpus_cli(
 {
     CorpusOptions opt;
     std::string dir;
+    std::string deleted_list;
     bool have_large = false;
     for (size_t i = 0; i < args.size(); ++i) {
         const std::string &a = args[i];
@@ -1026,7 +1093,16 @@ corpus_cli(
             out << USAGE;
             return CORPUS_OK;
         }
-        if (a == "--seed" || a == "--large-size" || a == "--btree-entries") {
+        if (a == "--deleted-inodes") {
+            if (i + 1 >= args.size()) {
+                err << "tsk-corpus: " << a << " needs a value\n" << USAGE;
+                return CORPUS_USAGE;
+            }
+            deleted_list = args[++i];
+            continue;
+        }
+        if (a == "--seed" || a == "--large-size" || a == "--btree-entries" ||
+            a == "--churn") {
             if (i + 1 >= args.size()) {
                 err << "tsk-corpus: " << a << " needs a value\n" << USAGE;
                 return CORPUS_USAGE;
@@ -1034,7 +1110,8 @@ corpus_cli(
             const std::string &v = args[++i];
             uint64_t x = 0;
             if (!parse_u64(v, x, a == "--large-size") ||
-                (a == "--btree-entries" && (x == 0 || x > 1000000))) {
+                (a == "--btree-entries" && (x == 0 || x > 1000000)) ||
+                (a == "--churn" && x > 1000000)) {
                 err << "tsk-corpus: bad value for " << a << ": " << v << "\n";
                 return CORPUS_USAGE;
             }
@@ -1044,6 +1121,8 @@ corpus_cli(
                 opt.large_size = x;
                 have_large = true;
             }
+            else if (a == "--churn")
+                opt.churn_files = static_cast<unsigned>(x);
             else
                 opt.btree_entries = static_cast<unsigned>(x);
             continue;
@@ -1064,12 +1143,24 @@ corpus_cli(
     }
 
     std::vector<RecordLine> record;
-    bool ok = generate_corpus(dir, opt, record);
+    std::vector<uint64_t> deleted;
+    bool ok = generate_corpus(dir, opt, record, deleted);
     out << "# tsk-corpus seed=" << opt.seed << " large-size=" << opt.large_size
-        << " btree-entries=" << opt.btree_entries << "\n";
+        << " btree-entries=" << opt.btree_entries
+        << " churn=" << opt.churn_files << "\n";
     for (const RecordLine &l : record)
         out << format_record_line(l) << "\n";
     out.flush();
+    if (!deleted_list.empty()) {
+        std::ofstream list(deleted_list, std::ios::binary | std::ios::trunc);
+        for (uint64_t inode : deleted)
+            list << inode << "\n";
+        list.flush();
+        if (!list) {
+            err << "tsk-corpus: cannot write " << deleted_list << "\n";
+            return CORPUS_FAILED;
+        }
+    }
     if (!ok) {
         const RecordLine &last = record.back();
         err << "tsk-corpus: " << last.detail << "\n";

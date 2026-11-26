@@ -44,6 +44,14 @@
 #                                  gate 3's fsstat checks of PART expect VALUE
 #                                  for FIELD instead of the guest's value
 #                                  (e.g. sda6:block-size=2048)
+#   TSK_VALIDATE_WRONG_EXPECTED=PART:TOOL:SPEC
+#                                  gate 3's TOOL checks of PART (ils, ifind,
+#                                  blkls) get check-tool --override SPEC: an
+#                                  expected entry dropped (ils, e.g.
+#                                  sda4:ils:/allocated/129=drop), a wrong
+#                                  answer (ifind, e.g.
+#                                  sda4:ifind:/free-block=128) or summary value
+#                                  (blkls, e.g. sda6:blkls:block-count=1)
 # Limits (seconds): TSK_VALIDATE_STEP_TIMEOUT (600) per guest step and per
 # Host-side run,
 # TSK_VALIDATE_FREEZE_LIMIT (1800) after which the guest unfreezes by itself.
@@ -67,6 +75,7 @@ FREEZE_LIMIT=${TSK_VALIDATE_FREEZE_LIMIT:-1800}
 BREAK=${TSK_VALIDATE_BREAK:-}
 PAUSE=${TSK_VALIDATE_FROZEN_PAUSE:-}
 WRONG_SUMMARY=${TSK_VALIDATE_WRONG_SUMMARY:-}
+WRONG_EXPECTED=${TSK_VALIDATE_WRONG_EXPECTED:-}
 
 rm -rf "$OUT"
 mkdir -p "$OUT"
@@ -222,12 +231,12 @@ host_run() {
 }
 
 # host_tools <partition>: the CLI tool checks of the Host-side run, in a
-# one-off container like host_run's (host-run.sh --tools): fls, icat, fsstat
-# and istat of the normal build on partition N of the .vmdk, against the
-# Ground truth of the same frozen window, which is fetched first. Results in
-# strict-host/<partition>/tools/, the step's log and exit status in
-# strict-host/<partition>/tool-steps/ (apart from the harness's steps.tsv, so
-# that gate 3 reports them in the CLI tool checks only).
+# one-off container like host_run's (host-run.sh --tools): fls, icat, fsstat,
+# istat, ils, ifind and blkls of the normal build on partition N of the
+# .vmdk, against the Ground truth of the same frozen window, which is fetched
+# first. Results in strict-host/<partition>/tools/, the step's log and exit
+# status in strict-host/<partition>/tool-steps/ (apart from the harness's
+# steps.tsv, so that gate 3 reports them in the CLI tool checks only).
 host_tools() {
     local part=$1 dir=$OUT/strict-host/$1 gt=$OUT/strict-guest/$1 rc start
     local gout=$GUEST_DIR/out/$1 log=$OUT/strict-host/$1/tool-steps/host-tools.log
@@ -237,7 +246,8 @@ host_tools() {
         echo "$HOST_ERR" >"$log"
         rc=125
     elif ! fetch "$gout/ground-truth.manifest" "$gt/ground-truth.manifest" ||
-        ! fetch "$gout/stat.txt" "$gt/stat.txt"; then
+        ! fetch "$gout/stat.txt" "$gt/stat.txt" ||
+        ! fetch "$gout/ifind-blocks.txt" "$gt/ifind-blocks.txt"; then
         echo "could not fetch Ground truth from the guest (see capture-tools)" >"$log"
         rc=125
     else
@@ -285,21 +295,29 @@ fetch() { # fetch <guest-file> <host-file>
 # strict-host/<partition>/.
 strict_check() {
     local part=$1 mnt=$2 dev=/dev/$1 dir=$OUT/strict-guest/$1 gout=$GUEST_DIR/out/$1
-    local break_path= rc spots tdir=$dir/tool-steps
+    local break_path= rc spots walk_spots tdir=$dir/tool-steps
     mkdir -p "$dir" "$tdir"
     : >"$dir/steps.tsv"
     # The CLI tool checks' guest steps, apart from the harness's.
     : >"$tdir/steps.tsv"
     log "Strict check: $mnt ($part)"
     mapfile -t spots < <(spot_check_paths "$part")
+    # ifind -d's spot checks: the istat spot-check paths and the extent
+    # B+tree file.
+    walk_spots=("${spots[@]}" /corpus/fragmented/extents.bin)
     if [[ $WRONG_SUMMARY == "$part":* ]]; then
         printf '%s\n' "${WRONG_SUMMARY#*:}" >"$dir/summary-override"
+    fi
+    if [[ $WRONG_EXPECTED == "$part":*:* ]]; then
+        local spec=${WRONG_EXPECTED#*:}
+        printf '%s\n' "${spec#*:}" >"$dir/override-${spec%%:*}"
     fi
     [[ $BREAK == "$part":* ]] && break_path=${BREAK#*:}
 
     step "$dir" check-mount "$dev" "$mnt" || return 0
-    step "$dir" corpus "$mnt" "$(corpus_large_size "$part")" || return 0
     gssh "$STEP_TIMEOUT" sh -c "rm -rf $gout && mkdir -p $gout" || return 0
+    step "$dir" corpus "$mnt" "$(corpus_large_size "$part")" \
+        "$(corpus_churn_files "$part")" "$gout/corpus-deleted.txt" || return 0
     if [[ -n $break_path ]]; then
         step "$dir" break-locate "$mnt" "$dev" "$break_path" || return 0
     fi
@@ -318,7 +336,8 @@ strict_check() {
             step "$dir" break
         fi
         if step "$dir" flush "$dev"; then
-            step "$dir" corpus-formats "$mnt" "$dev"
+            step "$dir" corpus-formats "$mnt" "$dev" "$(corpus_churn_files "$part")"
+            step "$tdir" capture-walks "$mnt" "$dev" "$gout" "${walk_spots[@]}"
             step "$dir" run "$dev" "$gout/guest.manifest"
             step "$tdir" run-tools "$dev" "$gout"
         fi
@@ -343,6 +362,11 @@ strict_check() {
     # The CLI tool checks' Ground truth and the Guest side's tool output.
     fetch "$gout/fs-summary.txt" "$dir/fs-summary.txt" || rm -f "$dir/fs-summary.txt"
     fetch "$gout/stat.txt" "$dir/stat.txt" || rm -f "$dir/stat.txt"
+    # The walk checks' Ground truth.
+    local f
+    for f in walk-record.txt ifind-blocks.txt corpus-deleted.txt; do
+        fetch "$gout/$f" "$dir/$f" || rm -f "$dir/$f"
+    done
     rm -rf "$dir/tools"
     gssh "$STEP_TIMEOUT" sh -c "cd $gout && tar -c tools" | tar -x -C "$dir" ||
         rm -rf "$dir/tools"

@@ -37,15 +37,33 @@ corpus_large_size() {
     esac
 }
 
+# corpus_churn_files <partition>: the number of empty files the corpus makes
+# in /corpus/churn and deletes every other one of (#58), leaving free inodes
+# that were once in use in partly used chunks. On XFS, enough for interior
+# levels in the inode B+tree of the directory's AG (a 4 KiB v5 leaf holds 252
+# chunk records); none on the Control file system.
+corpus_churn_files() {
+    case $1 in
+    sda4 | sda5) echo 17000 ;;
+    sda6) echo 0 ;;
+    *) return 1 ;;
+    esac
+}
+
 # The committed Known failure list, relative to the repository root.
 KNOWN_FAILURES=test/vm/known-failures.txt
 
 # The static guest build's binaries (test/vm/guest-build.sh), in build/guest-static/bin.
-GUEST_TOOLS=(fls icat fsstat istat tsk-harness capture-ground-truth tsk-corpus)
+GUEST_TOOLS=(fls icat fsstat istat ils ifind blkls tsk-harness capture-ground-truth
+    tsk-corpus check-tool)
 
 # The CLI tool checks of each Strict check (gate 3): one check per tool and
 # side, named <tool>-guest and <tool>-host (also in the Known failure list).
-TOOL_CHECKS=(fls icat fsstat istat)
+TOOL_CHECKS=(fls icat fsstat istat ils ifind blkls)
+
+# The tool checks of the inode walk and the block walk (#58), whose Ground
+# truth is the walk record (tsk-validate.sh capture-walks).
+WALK_TOOL_CHECKS=(ils ifind blkls)
 
 # vm_comparisons: every comparison gates 3 and 4 run, as CHECK:PARTITION
 # separated by commas (compare-manifests --lint-known-failures --comparisons).

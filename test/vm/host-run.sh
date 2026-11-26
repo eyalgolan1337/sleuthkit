@@ -20,10 +20,10 @@
 #
 # With --tools, it runs the CLI tool checks instead of the harness, after
 # the same write attempts: test/vm/toolcheck/run-tools.sh with fls, icat,
-# fsstat, istat and mmls of the normal build (tools/fstools, tools/vstools),
-# reading GT-DIR's ground-truth.manifest and stat.txt and writing to the
-# directory OUT. Exit status: run-tools.sh's (0 ran, 2 error), 3 and 127 as
-# above.
+# fsstat, istat, ils, ifind, blkls and mmls of the normal build
+# (tools/fstools, tools/vstools), reading GT-DIR's ground-truth.manifest,
+# stat.txt and ifind-blocks.txt and writing to the directory OUT. Exit
+# status: run-tools.sh's (0 ran, 2 error), 3 and 127 as above.
 set -uo pipefail
 
 REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
@@ -76,7 +76,8 @@ if ((writable)); then
 fi
 
 if [[ -n $gt_dir ]]; then
-    for t in fstools/fls fstools/icat fstools/fsstat fstools/istat vstools/mmls; do
+    for t in fstools/fls fstools/icat fstools/fsstat fstools/istat fstools/ils \
+        fstools/ifind fstools/blkls vstools/mmls; do
         [[ -x $REPO/tools/$t ]] || {
             echo "host-run.sh: $REPO/tools/$t is not built (test/vm/host-build.sh)" >&2
             exit 127
@@ -84,7 +85,8 @@ if [[ -n $gt_dir ]]; then
     done
     PATH=$REPO/tools/fstools:$REPO/tools/vstools:$PATH exec \
         "$REPO/test/vm/toolcheck/run-tools.sh" "$image" "$out" \
-        "$gt_dir/ground-truth.manifest" "$gt_dir/stat.txt" "$partition"
+        "$gt_dir/ground-truth.manifest" "$gt_dir/stat.txt" \
+        "$gt_dir/ifind-blocks.txt" "$partition"
 fi
 
 [[ -x $HARNESS ]] || {

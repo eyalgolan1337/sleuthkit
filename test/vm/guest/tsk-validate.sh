@@ -5,8 +5,12 @@
 #
 #   tsk-validate.sh tools                      run each static tool once (no glibc errors)
 #   tsk-validate.sh check-mount DEV MNT        DEV is mounted on MNT
-#   tsk-validate.sh corpus MNT SIZE            (re)generate the Test corpus in MNT/corpus
-#   tsk-validate.sh corpus-formats MNT DEV     XFS: check the corpus's on-disk formats
+#   tsk-validate.sh corpus MNT SIZE CHURN DELETED
+#                                              (re)generate the Test corpus in MNT/corpus;
+#                                              the churn's deleted inodes into DELETED
+#   tsk-validate.sh corpus-formats MNT DEV CHURN
+#                                              XFS: check the corpus's on-disk formats, and
+#                                              the churn's inode B+tree if CHURN > 0
 #   tsk-validate.sh freeze MNT SECONDS         sync, arm the unfreeze timer, fsfreeze -f
 #   tsk-validate.sh unfreeze MNT               fsfreeze -u if frozen, disarm the timer
 #   tsk-validate.sh capture MNT OUT            Ground truth of MNT into OUT
@@ -17,8 +21,13 @@
 #   tsk-validate.sh capture-tools MNT DEV DIR PATH...
 #                                              Ground truth of the CLI tool checks into DIR:
 #                                              the file-system summary, stat of each PATH
-#   tsk-validate.sh run-tools DEV DIR          CLI tool checks: fls, icat, fsstat, istat on
-#                                              DEV into DIR/tools (DIR: capture, capture-tools)
+#   tsk-validate.sh capture-walks MNT DEV DIR PATH...
+#                                              Ground truth of the walk checks into DIR: the walk
+#                                              record (xfs_db, xfs_bmap or dumpe2fs, debugfs of
+#                                              each PATH) and the blocks to ask ifind -d about
+#   tsk-validate.sh run-tools DEV DIR          CLI tool checks: fls, icat, fsstat, istat, ils,
+#                                              ifind, blkls on DEV into DIR/tools (DIR: capture,
+#                                              capture-tools, capture-walks)
 #   tsk-validate.sh break-locate MNT DEV PATH  test hook: where PATH's first byte is on DEV
 #   tsk-validate.sh break                      test hook: flip that byte on DEV
 #   tsk-validate.sh restore                    test hook: put the byte back
@@ -51,7 +60,7 @@ cmd_tools() {
         # start, which it can't if it needs a newer glibc than the guest's.
         # 126 and above: not executable, not found, or killed by a signal.
         case ${t##*/} in
-        tsk-harness | capture-ground-truth | tsk-corpus) out=$("$t" --help 2>&1) ;;
+        tsk-harness | capture-ground-truth | tsk-corpus | check-tool) out=$("$t" --help 2>&1) ;;
         *) out=$("$t" -V 2>&1) ;;
         esac
         st=$?
@@ -73,11 +82,13 @@ cmd_check_mount() {
 
 # The Test corpus (#19): generated afresh in MNT/corpus in each run, from the
 # generator's fixed seed. Its record (made and not-made features) goes to
-# standard output. SIZE is the size of /files/large.bin.
+# standard output. SIZE is the size of /files/large.bin, CHURN the number of
+# files of its churn (#58; 0: none), whose deleted inodes go to DELETED.
 cmd_corpus() {
-    local mnt=$1 size=$2 c=$1/corpus
+    local mnt=$1 size=$2 churn=$3 deleted=$4 c=$1/corpus
     rm -rf "$c" || die "could not remove the old corpus $c"
-    "$BIN/tsk-corpus" --large-size "$size" "$c"
+    "$BIN/tsk-corpus" --large-size "$size" --churn "$churn" \
+        --deleted-inodes "$deleted" "$c"
 }
 
 # The magic of the directory block xfs_db printed, or nothing if the block is
@@ -90,8 +101,9 @@ xfs_block_magic() {
 # really have the on-disk format each was made for. Run in the frozen window,
 # after flush, so the device holds the current metadata. One line per path:
 # "OK   /path format: detail" or "FAIL /path: ...". Not XFS: one SKIP line.
+# CHURN is the number of files the corpus's churn made (0: none).
 cmd_corpus_formats() {
-    local mnt=$1 dev=$2 fstype info bs dirbs leafblk spec path want ino out
+    local mnt=$1 dev=$2 churn=$3 fstype info bs dirbs leafblk spec path want ino out
     local fmt size next first leaf got detail rc=0
     fstype=$(findmnt -no FSTYPE --mountpoint "$mnt") || die "nothing is mounted on $mnt"
     if [[ $fstype != xfs ]]; then
@@ -150,7 +162,33 @@ cmd_corpus_formats() {
             rc=1
         fi
     done
+    if ((churn > 0)); then
+        corpus_churn_level "$mnt" "$dev" || rc=1
+    fi
     return "$rc"
+}
+
+# The churn's inode B+tree (#58): the AG of /corpus/churn's files must have
+# an inode B+tree with interior levels (agi_level 2 or more).
+corpus_churn_level() {
+    local mnt=$1 dev=$2 sb bits ino ag agi level count free
+    if ! ino=$(stat -c %i "$mnt/corpus/churn/f00000"); then
+        echo "FAIL /corpus/churn: no f00000"
+        return 1
+    fi
+    sb=$(xfs_db -r -c "sb 0" -c "print agblklog inopblog" "$dev") || die "xfs_db sb failed on $dev"
+    bits=$(awk '/^agblklog = / { b += $3 } /^inopblog = / { b += $3 } END { print b }' <<<"$sb")
+    ag=$((ino >> bits))
+    agi=$(xfs_db -r -c "agi $ag" -c "print level count freecount" "$dev") || die "xfs_db agi $ag failed on $dev"
+    level=$(sed -nE 's/^level = ([0-9]+)$/\1/p' <<<"$agi")
+    count=$(sed -nE 's/^count = ([0-9]+)$/\1/p' <<<"$agi")
+    free=$(sed -nE 's/^freecount = ([0-9]+)$/\1/p' <<<"$agi")
+    if [[ $level =~ ^[0-9]+$ ]] && ((level >= 2)); then
+        echo "OK   /corpus/churn inode B+tree: AG $ag, level $level, $count inodes, $free free"
+    else
+        echo "FAIL /corpus/churn: the inode B+tree of AG $ag has level '$level', not 2 or more ($count inodes, $free free)"
+        return 1
+    fi
 }
 
 cmd_freeze() {
@@ -249,10 +287,102 @@ cmd_capture_tools() {
     done >>"$dir/stat.txt"
 }
 
+# Ground truth of the walk checks (#58; test/vm/README.md, "Gate 3: CLI
+# tool checks"), in the frozen window after flush, so the device holds the
+# current metadata: DIR/walk-record.txt, the tools' output that check-tool
+# reads (its sections are described in test/vm/toolcheck/walkcheck.h), and
+# DIR/ifind-blocks.txt, the blocks to ask ifind -d about (check-tool
+# plan-blocks). PATHs are the spot-check paths whose data blocks ifind -d is
+# asked about; symlinks are skipped (xfs_bmap would follow them). The raw
+# ctime of each inode check-tool plan-inodes names is read at the inode's
+# byte offset from xfs_db (bytes 0x30-0x37, check-tool read-bytes) or comes
+# from debugfs stat.
+# walk_paths MNT PATH...: "<inode> <path>" for each PATH under MNT that is a
+# regular file or a directory (not a symlink).
+walk_paths() {
+    local mnt=$1 p f ino
+    shift
+    for p in "$@"; do
+        f=$mnt$p
+        [[ ! -L $f && (-f $f || -d $f) ]] || continue
+        ino=$(stat -c %i -- "$f") || die "stat $f failed"
+        printf '%s %s\n' "$ino" "$p"
+    done
+}
+
+cmd_capture_walks() {
+    local mnt=$1 dev=$2 dir=$3 type rec=$3/walk-record.txt plan=$3/walk-inodes.txt
+    local p ino ag agcount paths
+    shift 3
+    paths=$(walk_paths "$mnt" "$@") || exit 1
+    : >"$dir/ifind-blocks.txt"
+    type=$(blkid -p -s TYPE -o value "$dev") || die "blkid -p $dev failed"
+    case $type in
+    xfs)
+        agcount=$(xfs_db -r -c "sb 0" -c "print agcount" "$dev" | sed -nE 's/^agcount = ([0-9]+)$/\1/p')
+        [[ $agcount =~ ^[0-9]+$ ]] || die "xfs_db: no AG count on $dev"
+        {
+            echo "== xfs_db sb"
+            xfs_db -r -c "sb 0" -c "print blocksize agcount agblocks dblocks agblklog inopblog rbmino rsumino uquotino gquotino pquotino" "$dev"
+            for ((ag = 0; ag < agcount; ag++)); do
+                echo "== xfs_db agi $ag"
+                xfs_db -r -c "agi $ag" -c "print count level freecount" -c "addr root" -c btdump "$dev"
+                echo "== xfs_db bnobt $ag"
+                xfs_db -r -c "agf $ag" -c "addr bnoroot" -c btdump "$dev"
+            done
+            while read -r ino p; do
+                [[ -n $ino ]] || continue
+                echo "== xfs_bmap $ino $p"
+                xfs_bmap -v -- "$mnt$p" || die "xfs_bmap -v $mnt$p failed"
+            done <<<"$paths"
+        } >"$rec" || die "could not write $rec"
+        ;;
+    ext2 | ext3 | ext4)
+        {
+            echo "== dumpe2fs"
+            dumpe2fs "$dev" 2>/dev/null || die "dumpe2fs $dev failed"
+            while read -r ino p; do
+                [[ -n $ino ]] || continue
+                echo "== debugfs $ino $p"
+                debugfs -c -R "stat <$ino>" "$dev" 2>/dev/null || die "debugfs stat $mnt$p failed"
+            done <<<"$paths"
+        } >"$rec" || die "could not write $rec"
+        ;;
+    *) die "capture-walks: $dev is $type, not XFS or ext2/3/4" ;;
+    esac
+    "$BIN/check-tool" plan-inodes "$rec" >"$plan" || die "check-tool plan-inodes failed"
+    echo "== inode-ctime" >>"$rec"
+    case $type in
+    xfs)
+        # Per inode, xfs_db's stack gives its byte offset on the device, and
+        # check-tool reads di_ctime, 8 bytes at 0x30. (xfs_db's own hex dump,
+        # type data after inode, sometimes prints a stale buffer.)
+        awk '{ print "inode " $1; print "stack" }' "$plan" |
+            xfs_db -r "$dev" 2>/dev/null |
+            awk '/^\tbyte offset [0-9]+, / { off = $3; sub(/,$/, "", off) }
+                 /^\tinode [0-9]+, / && off != "" { ino = $2; sub(/,$/, "", ino); print ino, off; off = "" }' \
+                >"$plan.offsets"
+        ((PIPESTATUS[1] == 0)) || die "xfs_db failed reading the inodes' offsets on $dev"
+        "$BIN/check-tool" read-bytes "$dev" 48 8 "$plan.offsets" >>"$rec" ||
+            die "check-tool read-bytes failed"
+        ;;
+    *)
+        awk '{ print "stat <" $1 ">" }' "$plan" >"$plan.cmds"
+        debugfs -c -f "$plan.cmds" "$dev" 2>/dev/null |
+            awk '/^debugfs: stat </ { ino = $3; gsub(/[<>]/, "", ino) }
+                 /^ *ctime: 0x/ && ino != "" { print ino, substr($2, 3, 8); ino = "" }' >>"$rec"
+        ((PIPESTATUS[0] == 0)) || die "debugfs failed reading the inodes' ctimes on $dev"
+        ;;
+    esac
+    "$BIN/check-tool" plan-blocks "$rec" >"$dir/ifind-blocks.txt" ||
+        die "check-tool plan-blocks failed"
+    echo "walk record: $(grep -c '' "$rec") lines, $(grep -c '' "$plan") inode ctimes, $(grep -c '' "$dir/ifind-blocks.txt") ifind blocks"
+}
+
 cmd_run_tools() {
     local dev=$1 dir=$2
     PATH=$BIN:$PATH "$HERE/run-tools.sh" "$dev" "$dir/tools" \
-        "$dir/ground-truth.manifest" "$dir/stat.txt"
+        "$dir/ground-truth.manifest" "$dir/stat.txt" "$dir/ifind-blocks.txt"
 }
 
 # Test hook (TSK_VALIDATE_BREAK): the byte offset on DEV of the first byte of
@@ -310,6 +440,7 @@ capture-fs) cmd_capture_fs "$@" ;;
 flush) cmd_flush "$@" ;;
 run) cmd_run "$@" ;;
 capture-tools) cmd_capture_tools "$@" ;;
+capture-walks) cmd_capture_walks "$@" ;;
 run-tools) cmd_run_tools "$@" ;;
 break-locate) cmd_break_locate "$@" ;;
 break) cmd_break ;;

@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # The static guest build (test/vm/README.md, "The static guest build"): the
-# library, fls, icat, fsstat, istat, the harness and Ground truth capture,
-# fully statically linked so that they run in the Validation VM, whose glibc
-# (AlmaLinux 9: 2.34) is older than the devcontainer's. Run in the
-# devcontainer, from anywhere:
+# library, fls, icat, fsstat, istat, ils, ifind, blkls, the harness, Ground
+# truth capture, the Test corpus generator and check-tool (which plans the
+# walk checks' questions), fully statically linked so that they run in the
+# Validation VM, whose glibc (AlmaLinux 9: 2.34) is older than the
+# devcontainer's. Run in the devcontainer, from anywhere:
 #
 #   test/vm/guest-build.sh            # incremental
 #   test/vm/guest-build.sh --fresh    # start over: new copy, bootstrap, configure
@@ -23,13 +24,13 @@ JOBS=${JOBS:-$(nproc)}
 # The same flags as the devcontainer build (.devcontainer/build-compile-db.sh):
 # without -fno-strict-aliasing, GCC 16.1 breaks file system autodetection.
 BUILD_FLAGS="-g -O2 -fno-strict-aliasing"
-TOOLS=(fls icat fsstat istat)
+TOOLS=(fls icat fsstat istat ils ifind blkls)
 
 case ${1:-} in
 --fresh) rm -rf "$OUT" ;;
 '') ;;
 *)
-    sed -n '2,15p' "$0" >&2
+    sed -n '2,16p' "$0" >&2
     exit 2
     ;;
 esac
@@ -57,12 +58,13 @@ make -j"$JOBS" -C tools/fstools LDFLAGS=-all-static "${TOOLS[@]}"
 
 echo "== harness and Ground truth capture"
 make -j"$JOBS" -f test/vm/manifest/manifest.mk BUILD_DIR="$OUT/vm-tools" \
-    harness-static capture-static corpus-static
+    harness-static capture-static corpus-static check-tool-static
 
 mkdir -p "$BIN"
 bad=0
 for f in "${TOOLS[@]/#/tools/fstools/}" "$OUT/vm-tools/static/tsk-harness" \
-    "$OUT/vm-tools/static/capture-ground-truth" "$OUT/vm-tools/static/tsk-corpus"; do
+    "$OUT/vm-tools/static/capture-ground-truth" "$OUT/vm-tools/static/tsk-corpus" \
+    "$OUT/vm-tools/static/check-tool"; do
     # Stripped: the guest copy is sent over SSH on every run.
     strip --strip-debug -o "$BIN/${f##*/}" "$f"
     desc=$(file -b "$BIN/${f##*/}")

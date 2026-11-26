@@ -6,11 +6,12 @@
 #
 # Checks: strict-guest and strict-host (gate 3, the Guest-side run and the
 # Host-side run of the Strict check); fls-guest, icat-guest, fsstat-guest,
-# istat-guest and their -host twins (gate 3, the CLI tool checks of each
-# side); best-effort-guest and best-effort-host (gate 4, the Guest-side run
-# and the Host-side run of the Best-effort check). Summary fields (fs-type,
+# istat-guest, ils-guest, ifind-guest, blkls-guest and their -host twins
+# (gate 3, the CLI tool checks of each side); best-effort-guest and
+# best-effort-host (gate 4, the Guest-side run and the Host-side run of the
+# Best-effort check). Summary fields (fs-type,
 # block-size, inode-size, group-count, uuid, label, version) are differences
-# of the fsstat checks.
+# of the fsstat checks, block-count of the blkls checks.
 # Partitions: the guest's device names (sda2 /boot, sda3 /, sda4 /data,
 # sda5 /data-compat, sda6 /control, the Control file system).
 

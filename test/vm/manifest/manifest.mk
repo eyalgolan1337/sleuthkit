@@ -12,6 +12,7 @@
 #   make -f test/vm/manifest/manifest.mk capture-static  # statically linked capture
 #   make -f test/vm/manifest/manifest.mk harness-static  # statically linked harness
 #   make -f test/vm/manifest/manifest.mk corpus-static   # statically linked generator
+#   make -f test/vm/manifest/manifest.mk check-tool-static  # statically linked check-tool
 #                                         # (in a tree configured --disable-shared)
 #   make -f test/vm/manifest/manifest.mk clean
 #
@@ -41,9 +42,11 @@ HARNESS := $(BUILD_DIR)/tsk-harness
 HARNESS_SELFTEST := $(BUILD_DIR)/harness-selftest
 CORPUS := $(BUILD_DIR)/tsk-corpus
 CHECK_TOOL := $(BUILD_DIR)/check-tool
-TOOLCHECK_OBJS := $(BUILD_DIR)/toolcheck.o $(BUILD_DIR)/toolcheck_cli.o
+TOOLCHECK_OBJS := $(BUILD_DIR)/toolcheck.o $(BUILD_DIR)/toolcheck_cli.o \
+    $(BUILD_DIR)/walkcheck.o
 
-.PHONY: all check clean capture-static harness-static corpus-static
+.PHONY: all check clean capture-static harness-static corpus-static \
+    check-tool-static
 all: $(LIB) $(COMPARE) $(SELFTEST) $(CAPTURE) $(HARNESS) $(HARNESS_SELFTEST) \
     $(CORPUS) $(CHECK_TOOL)
 
@@ -80,7 +83,8 @@ $(BUILD_DIR)/corpus_selftest.o: CPPFLAGS += -I$(abspath $(SRC_DIR)) -I$(abspath 
 # reaches them.
 $(BUILD_DIR)/%.o: $(TOOLCHECK_DIR)/%.cpp | $(BUILD_DIR) $(DEP_DIR)
 	$(COMPILE)
-$(TOOLCHECK_OBJS) $(BUILD_DIR)/toolcheck_main.o $(BUILD_DIR)/toolcheck_selftest.o: CPPFLAGS += -I$(abspath $(SRC_DIR))
+$(TOOLCHECK_OBJS) $(BUILD_DIR)/toolcheck_main.o $(BUILD_DIR)/toolcheck_selftest.o \
+    $(BUILD_DIR)/walkcheck_selftest.o: CPPFLAGS += -I$(abspath $(SRC_DIR))
 
 # The harness (test/vm/harness/) may use only the public libtsk API, so it is
 # compiled against a staged install of the library (make install with
@@ -124,7 +128,7 @@ $(COMPARE): $(BUILD_DIR)/compare_main.o $(LIB)
 
 SELFTEST_OBJS := $(BUILD_DIR)/selftest.o $(BUILD_DIR)/sha256_selftest.o \
     $(BUILD_DIR)/capture_selftest.o $(BUILD_DIR)/corpus_selftest.o \
-    $(BUILD_DIR)/toolcheck_selftest.o
+    $(BUILD_DIR)/toolcheck_selftest.o $(BUILD_DIR)/walkcheck_selftest.o
 $(SELFTEST_OBJS): CPPFLAGS += $(CPPUNIT_CFLAGS)
 $(SELFTEST): $(SELFTEST_OBJS) $(BUILD_DIR)/capture.o $(BUILD_DIR)/corpus.o \
     $(TOOLCHECK_OBJS) $(LIB)
@@ -132,6 +136,14 @@ $(SELFTEST): $(SELFTEST_OBJS) $(BUILD_DIR)/capture.o $(BUILD_DIR)/corpus.o \
 
 $(CHECK_TOOL): $(BUILD_DIR)/toolcheck_main.o $(TOOLCHECK_OBJS) $(LIB)
 	$(CXX) $(CXXFLAGS) $(LDFLAGS) -o $@ $^
+
+# check-tool plans the walk checks' questions in the guest (plan-inodes,
+# plan-blocks): fully static, like capture-static.
+CHECK_TOOL_STATIC := $(BUILD_DIR)/static/check-tool
+check-tool-static: $(CHECK_TOOL_STATIC)
+$(CHECK_TOOL_STATIC): $(BUILD_DIR)/toolcheck_main.o $(TOOLCHECK_OBJS) $(LIB)
+	mkdir -p $(@D)
+	$(CXX) $(CXXFLAGS) $(LDFLAGS) -static -o $@ $^
 
 $(CAPTURE): $(BUILD_DIR)/capture_main.o $(BUILD_DIR)/capture.o $(LIB)
 	$(CXX) $(CXXFLAGS) $(LDFLAGS) -o $@ $^
@@ -180,7 +192,8 @@ $(BUILD_DIR) $(DEP_DIR):
 clean:
 	rm -f $(BUILD_DIR)/*.o $(DEP_DIR)/*.Po $(LIB) $(COMPARE) $(SELFTEST) $(CAPTURE) \
 	    $(HARNESS) $(HARNESS_SELFTEST) $(TSK_STAGE_STAMP) $(CAPTURE_STATIC) \
-	    $(HARNESS_STATIC) $(CORPUS) $(CORPUS_STATIC) $(CHECK_TOOL)
+	    $(HARNESS_STATIC) $(CORPUS) $(CORPUS_STATIC) $(CHECK_TOOL) \
+	    $(CHECK_TOOL_STATIC)
 	rm -rf $(TSK_STAGE)
 
 -include $(wildcard $(DEP_DIR)/*.Po)
