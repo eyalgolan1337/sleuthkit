@@ -13,6 +13,7 @@
 
 #include <cppunit/extensions/HelperMacros.h>
 
+#include <algorithm>
 #include <cerrno>
 #include <cstdio>
 #include <cstdlib>
@@ -50,6 +51,7 @@ small_options()
     CorpusOptions o;
     o.large_size = 3 * 1024 * 1024 + 17;
     o.btree_entries = 1500;
+    o.churn_files = 20;
     return o;
 }
 
@@ -127,6 +129,8 @@ class CorpusTest : public CppUnit::TestFixture {
     CPPUNIT_TEST(timestamps_before_1970_and_after_2038);
     CPPUNIT_TEST(every_entry_has_seeded_nanosecond_times);
     CPPUNIT_TEST(owners_and_modes);
+    CPPUNIT_TEST(churn_deletes_every_other_file);
+    CPPUNIT_TEST(churn_off_is_not_made);
     CPPUNIT_TEST(record_has_each_feature);
     CPPUNIT_TEST(refuses_a_non_empty_target);
     CPPUNIT_TEST(cli_writes_the_record);
@@ -137,6 +141,7 @@ class CorpusTest : public CppUnit::TestFixture {
     // One corpus shared by the read-only tests, generated once.
     static std::string s_dir;
     static std::vector<RecordLine> s_record;
+    static std::vector<uint64_t> s_deleted;
 
     std::string fresh(const std::string &name) const
     {
@@ -166,7 +171,7 @@ class CorpusTest : public CppUnit::TestFixture {
             CPPUNIT_ASSERT(mkdtemp(shared) != nullptr);
             s_dir = std::string(shared) + "/corpus";
             CPPUNIT_ASSERT_MESSAGE("generate the shared corpus",
-                generate_corpus(s_dir, small_options(), s_record));
+                generate_corpus(s_dir, small_options(), s_record, s_deleted));
             std::atexit([] {
                 nftw(s_dir.substr(0, s_dir.rfind('/')).c_str(), remove_one, 16,
                     FTW_DEPTH | FTW_PHYS);
@@ -467,6 +472,55 @@ class CorpusTest : public CppUnit::TestFixture {
         }
     }
 
+    void churn_deletes_every_other_file()
+    {
+        // 20 empty files made in /churn; the odd-numbered ones deleted, last
+        // of all, so no later file reuses their inodes. Their inode numbers
+        // are kept, each once, and no entry of the corpus has one.
+        std::vector<std::string> names = list_names(c("churn"));
+        std::sort(names.begin(), names.end());
+        CPPUNIT_ASSERT_EQUAL(size_t(10), names.size());
+        CPPUNIT_ASSERT_EQUAL(std::string("f00000"), names[0]);
+        CPPUNIT_ASSERT_EQUAL(std::string("f00018"), names[9]);
+        CPPUNIT_ASSERT_EQUAL(
+            static_cast<off_t>(0), lst("churn/f00004").st_size);
+        CPPUNIT_ASSERT_EQUAL(size_t(10), s_deleted.size());
+        const std::set<uint64_t> deleted(s_deleted.begin(), s_deleted.end());
+        CPPUNIT_ASSERT_EQUAL(size_t(10), deleted.size());
+        // Every inode of the corpus (nftw's callback takes no state).
+        static std::set<uint64_t> inodes;
+        inodes.clear();
+        CPPUNIT_ASSERT_EQUAL(0,
+            nftw(
+                s_dir.c_str(),
+                [](const char *, const struct stat *st, int, struct FTW *) {
+                    inodes.insert(st->st_ino);
+                    return 0;
+                },
+                16, FTW_PHYS));
+        for (uint64_t d : deleted)
+            CPPUNIT_ASSERT_MESSAGE(std::to_string(d), inodes.count(d) == 0);
+        const RecordLine *l = find_line(s_record, "churn", RecordLine::Made);
+        CPPUNIT_ASSERT(l != nullptr &&
+            l->detail ==
+                "/churn: 20 empty files, every other one deleted (10 left)");
+    }
+
+    void churn_off_is_not_made()
+    {
+        CorpusOptions o = small_options();
+        o.churn_files = 0;
+        std::vector<RecordLine> r;
+        std::vector<uint64_t> deleted;
+        CPPUNIT_ASSERT(generate_corpus(fresh("nochurn"), o, r, deleted));
+        CPPUNIT_ASSERT(deleted.empty());
+        CPPUNIT_ASSERT(
+            access((fresh("nochurn") + "/churn").c_str(), F_OK) != 0);
+        const RecordLine *l = find_line(r, "churn", RecordLine::NotMade);
+        CPPUNIT_ASSERT(
+            l != nullptr && l->detail == "not asked for (--churn 0)");
+    }
+
     void record_has_each_feature()
     {
         // Each feature has one key: at most one made line (what was made)
@@ -479,7 +533,7 @@ class CorpusTest : public CppUnit::TestFixture {
             "255-byte names", "timestamps before 1970",
             "timestamps at the epoch and the end of 32-bit time",
             "timestamps after 2038", "special files", "owners and modes",
-            "timestamps"};
+            "churn", "timestamps"};
         for (const std::string &f : features) {
             unsigned made = 0, not_made = 0;
             for (const RecordLine &l : s_record)
@@ -538,10 +592,24 @@ class CorpusTest : public CppUnit::TestFixture {
         }());
         const std::string o = out.str();
         CPPUNIT_ASSERT(o.find("# tsk-corpus seed=1974517982 large-size=1024 "
-                              "btree-entries=100\n") == 0);
+                              "btree-entries=100 churn=0\n") == 0);
         CPPUNIT_ASSERT(
             o.find("\nmade\tB+tree directory\t/dirs/btree: 100 entries") !=
             std::string::npos);
+
+        // --churn and --deleted-inodes: one deleted inode per line.
+        std::ostringstream out3, err3;
+        const std::string list = fresh("deleted.txt");
+        rc = corpus_cli(
+            {"--large-size", "1K", "--btree-entries", "10", "--churn", "4",
+                "--deleted-inodes", list, fresh("cli-churn")},
+            out3, err3);
+        CPPUNIT_ASSERT_EQUAL_MESSAGE(
+            err3.str(), static_cast<int>(CORPUS_OK), rc);
+        const std::string d = read_file(list);
+        CPPUNIT_ASSERT(std::count(d.begin(), d.end(), '\n') == 2);
+        CPPUNIT_ASSERT_EQUAL(2u, count_entries(fresh("cli-churn") + "/churn"));
+        CPPUNIT_ASSERT(out3.str().find(" churn=4\n") != std::string::npos);
 
         std::ostringstream out2, err2;
         rc = corpus_cli({"--large-size", "1M", fresh("cli")}, out2, err2);
@@ -563,6 +631,9 @@ class CorpusTest : public CppUnit::TestFixture {
             {"--seed", "abc", "--large-size", "1", fresh("u")},
             {"--bogus", "--large-size", "1", fresh("u")},
             {"--large-size", "1", fresh("u"), fresh("v")},
+            {"--churn", "x", "--large-size", "1", fresh("u")},
+            {"--churn", "2000001", "--large-size", "1", fresh("u")},
+            {"--deleted-inodes", "--large-size", "1", fresh("u")},
         };
         for (const auto &args : bad) {
             std::ostringstream out, err;
@@ -580,5 +651,6 @@ class CorpusTest : public CppUnit::TestFixture {
 
 std::string CorpusTest::s_dir;
 std::vector<RecordLine> CorpusTest::s_record;
+std::vector<uint64_t> CorpusTest::s_deleted;
 
 CPPUNIT_TEST_SUITE_REGISTRATION(CorpusTest);

@@ -2,7 +2,8 @@
 # The build that the Host-side run of the Strict checks uses
 # (test/vm/README.md, "Gate 3: Strict checks"): the normal devcontainer build
 # of the library, build/vm-tools/tsk-harness, which reads .vmdk files
-# through libvmdk, and the CLI tool checks' fls, icat, fsstat, istat and mmls.
+# through libvmdk, and the CLI tool checks' fls, icat, fsstat, istat, ils,
+# ifind, blkls and mmls.
 # Run in the devcontainer, from anywhere:
 #
 #   test/vm/host-build.sh            # incremental
@@ -25,7 +26,7 @@ case ${1:-} in
 --fresh) fresh=1 ;;
 '') ;;
 *)
-    sed -n '2,15p' "$0" >&2
+    sed -n '2,17p' "$0" >&2
     exit 2
     ;;
 esac
@@ -47,8 +48,8 @@ fi
 # The CLI tool checks' tools, built before the harness: if they fail, there
 # is no harness, and the Host-side run reports that instead of running old
 # tools.
-echo "== fls, icat, fsstat, istat and mmls"
-make -j"$(nproc)" -C tools/fstools fls icat fsstat istat
+echo "== fls, icat, fsstat, istat, ils, ifind, blkls and mmls"
+make -j"$(nproc)" -C tools/fstools fls icat fsstat istat ils ifind blkls
 make -j"$(nproc)" -C tools/vstools mmls
 echo "== harness"
 make -j"$(nproc)" -f test/vm/manifest/manifest.mk "$HARNESS"

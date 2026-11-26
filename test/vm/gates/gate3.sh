@@ -161,8 +161,21 @@ gate3_tool() {
         item_fail "$mnt ($part): capturing the tool checks' Ground truth failed (capture-tools, exit $rc): $(tail -n1 "$gt/tool-steps/capture-tools.log")"
         return 1
     fi
+    # The walk checks' Ground truth (capture-walks, after the cache flush).
+    if [[ " ${WALK_TOOL_CHECKS[*]} " == *" $tool "* ]]; then
+        if ! IFS=$'\t' read -r name rc secs < <(grep "^capture-walks"$'\t' "$gt/tool-steps/steps.tsv" 2>/dev/null); then
+            item_fail "$mnt ($part): the walk checks' Ground truth was not captured: the Strict check sequence stopped before it (see the Strict check, Guest side)"
+            return 1
+        fi
+        echo "== capture-walks (exit status $rc, ${secs}s)"
+        cat "$gt/tool-steps/capture-walks.log"
+        if [[ $rc != 0 ]]; then
+            item_fail "$mnt ($part): capturing the walk checks' Ground truth failed (capture-walks, exit $rc): $(tail -n1 "$gt/tool-steps/capture-walks.log")"
+            return 1
+        fi
+    fi
     if ! IFS=$'\t' read -r name rc secs < <(grep "^$step"$'\t' "$dir/tool-steps/steps.tsv" 2>/dev/null); then
-        item_fail "$mnt ($part): fls, icat, fsstat and istat did not run on the $side side (step $step; see the Strict check of this side)"
+        item_fail "$mnt ($part): the CLI tools did not run on the $side side (step $step; see the Strict check of this side)"
         return 1
     fi
     echo "== $step (exit status $rc, ${secs}s)"
@@ -178,6 +191,8 @@ gate3_tool() {
     fi
     if [[ $tool == fsstat && -f $gt/summary-override ]]; then
         override=(--override "$(<"$gt/summary-override")")
+    elif [[ -f $gt/override-$tool ]]; then
+        override=(--override "$(<"$gt/override-$tool")")
     fi
     echo "== $tool: exit statuses and standard error"
     for f in "$dir/tools/$tool"*.status "$dir/tools/$tool"/*.status; do
