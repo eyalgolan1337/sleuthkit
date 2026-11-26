@@ -136,6 +136,20 @@ read_agi(XFS_INFO *xfs, uint32_t agno, uint32_t &root, uint32_t &level)
         set_corrupt();
         return false;
     }
+    // The AGI's checksum covers its sector; a warning names its block.
+    if (cksum_wanted(xfs)) {
+        std::vector<uint8_t> sector(xfs->sectsize);
+        if (tsk_fs_read(fs, agi_off, reinterpret_cast<char *>(sector.data()),
+                sector.size()) != (ssize_t)sector.size()) {
+            tsk_error_reset();
+        }
+        else {
+            check_block_cksum(xfs, sector.data(), sector.size(),
+                XFS_AGI_CRC_OFF,
+                ag_block(xfs, agno, 0) +
+                    XFS_AGI_SECTOR * xfs->sectsize / fs->block_size);
+        }
+    }
     return true;
 }
 
@@ -177,6 +191,8 @@ inode_allocation(XFS_INFO *xfs, const InodeAddr &a)
             set_corrupt();
             return Alloc::FAILED;
         }
+        check_block_cksum(xfs, b, fs->block_size, XFS_BTREE_SBLOCK_CRC_OFF,
+            ag_block(xfs, a.agno, block));
         if (want == 0) {
             if (numrecs > space / sizeof(xfs_inobt_rec)) {
                 set_corrupt();
@@ -236,15 +252,17 @@ struct InobtWalk {
  * Appends the records of the inode B+tree subtree at AG block `block`, which
  * must be at `level`, in inode order. Each step down goes down one level,
  * every node has records and each chunk starts after the one before, so a
- * tree that loops back on itself is an error, not an endless walk. A leaf
- * may be empty: the root of an AG without inodes is. Errors: a short read
- * (TSK_ERR_FS_READ); a block outside the AG, of another magic or level, a
- * node with no records, a block with too many, or a chunk that overlaps the one
- * before or is not inside the AG (TSK_ERR_FS_CORRUPT). Chunks need not be
- * aligned to 64 inodes (on v4 they are aligned to blocks).
+ * tree that loops back on itself is an error, not an endless walk. Only the
+ * root (`root`) may be a leaf with no records, in an AG without inodes;
+ * below a node, where it could be reached again and again, it is an error.
+ * Errors: a short read (TSK_ERR_FS_READ); a block outside the AG, of another
+ * magic or level, with no records (but such a root) or too many, or a chunk
+ * that overlaps the one before or is not inside the AG
+ * (TSK_ERR_FS_CORRUPT). Chunks need not be aligned to 64 inodes (on v4 they
+ * are aligned to blocks).
  */
 bool
-inobt_subtree(InobtWalk &walk, uint32_t block, unsigned level)
+inobt_subtree(InobtWalk &walk, uint32_t block, unsigned level, bool root)
 {
     XFS_INFO *xfs = walk.xfs;
     TSK_FS_INFO *fs = &xfs->fs_info;
@@ -269,15 +287,17 @@ inobt_subtree(InobtWalk &walk, uint32_t block, unsigned level)
     if (tsk_getu32(TSK_BIG_ENDIAN, h->bb_magic) !=
             (crc ? XFS_IBT_CRC_MAGIC : XFS_IBT_MAGIC) ||
         tsk_getu16(TSK_BIG_ENDIAN, h->bb_level) != level ||
-        (level > 0 && numrecs == 0) || numrecs > maxrecs) {
+        (numrecs == 0 && !(root && level == 0)) || numrecs > maxrecs) {
         set_corrupt();
         return false;
     }
+    check_block_cksum(xfs, b, fs->block_size, XFS_BTREE_SBLOCK_CRC_OFF,
+        ag_block(xfs, walk.agno, block));
     if (level > 0) {
         const uint8_t *ptrs = b + hdr + maxrecs * 4;
         for (size_t i = 0; i < numrecs; ++i) {
             if (!inobt_subtree(walk, tsk_getu32(TSK_BIG_ENDIAN, ptrs + 4 * i),
-                    level - 1)) {
+                    level - 1, false)) {
                 return false;
             }
         }
@@ -311,7 +331,7 @@ inobt_records(XFS_INFO *xfs, uint32_t agno, std::vector<xfs_inobt_rec> &recs)
         return false;
     }
     InobtWalk walk{xfs, agno, 0, {}};
-    if (!inobt_subtree(walk, root, level - 1)) {
+    if (!inobt_subtree(walk, root, level - 1, true)) {
         return false;
     }
     recs.swap(walk.recs);
@@ -328,6 +348,14 @@ dinode_core_size(uint8_t version)
 }
 
 } // namespace
+
+/* Whether `inum` can be an inode: not 0, and in a block of an AG. */
+bool
+inum_in_fs(const XFS_INFO *xfs, TSK_INUM_T inum)
+{
+    InodeAddr a{};
+    return inum != 0 && split_inum(xfs, inum, a);
+}
 
 DinodeView
 dinode_view(const XFS_INFO *xfs, const uint8_t *raw)
@@ -371,6 +399,18 @@ dinode_sound(
         return false;
     }
     return dinode_core_size(v) + size_t{core->di_forkoff} * 8 < xfs->inodesize;
+}
+
+/* If checksums are verified (cksum_wanted): verifies the checksum of raw
+ * inode `inum` and reports a wrong one in the verbose output. */
+void
+check_dinode_cksum(const XFS_INFO *xfs, TSK_INUM_T inum, const uint8_t *raw)
+{
+    if (cksum_wanted(xfs) &&
+        !cksum_good(raw, xfs->inodesize, XFS_DINODE_CRC_OFF)) {
+        tsk_fprintf(stderr,
+            "xfs_dinode_load: Inode %" PRIuINUM " checksum failed\n", inum);
+    }
 }
 
 /* Reads the inode at `a` (number `inum`) into `raw`, the inode size of the
@@ -432,6 +472,7 @@ xfs_dinode_load(XFS_INFO *xfs, TSK_INUM_T inum, uint8_t *raw)
         tsk_error_set_errstr("xfs_dinode_load: address: %" PRIuINUM, inum);
         return 1;
     }
+    check_dinode_cksum(xfs, inum, raw);
     return 0;
 }
 
@@ -514,7 +555,7 @@ uint8_t load_link(XFS_INFO *xfs, TSK_FS_META *meta);
  */
 uint8_t
 xfs_inode_lookup(TSK_FS_INFO *fs, TSK_FS_FILE *a_fs_file, TSK_INUM_T inum)
-{
+try {
     XFS_INFO *xfs = reinterpret_cast<XFS_INFO *>(fs);
     if (a_fs_file == NULL) {
         tsk_error_reset();
@@ -551,6 +592,12 @@ xfs_inode_lookup(TSK_FS_INFO *fs, TSK_FS_FILE *a_fs_file, TSK_INUM_T inum)
             TSK_FS_META_FLAG_USED));
     // NOLINTEND(clang-analyzer-optin.core.EnumCastOutOfRange)
     return load_link(xfs, meta);
+}
+catch (const std::bad_alloc &) {
+    // The block buffers: no exception reaches a C caller.
+    tsk_error_reset();
+    tsk_error_set_errno(TSK_ERR_AUX_MALLOC);
+    return 1;
 }
 
 namespace {
@@ -598,6 +645,7 @@ visit_inode(InodeWalk &walk, TSK_INUM_T inum, bool allocated)
     if (!dinode_sound(xfs, inum, raw, allocated)) {
         return Visit::CONT;
     }
+    check_dinode_cksum(xfs, inum, raw);
     const xfs_dinode *core = reinterpret_cast<const xfs_dinode *>(raw);
     const bool used =
         allocated || tsk_getu64(TSK_BIG_ENDIAN, core->di_ctime.t) != 0;
@@ -838,6 +886,37 @@ fsblock_addr(
 enum class Target { READ, NONE, FAILED };
 
 /*
+ * If checksums are verified (cksum_wanted): verifies the checksum of the
+ * remote symlink extent of `count` blocks at block `addr`, which covers the
+ * whole extent, and reports a wrong one in the verbose output. A target takes at
+ * most XFS_SYMLINK_MAXEXTLEN blocks; a longer extent is not verified, nor
+ * one that can't be read again.
+ */
+void
+check_symlink_cksum(XFS_INFO *xfs, TSK_DADDR_T addr, uint64_t count)
+{
+    TSK_FS_INFO *fs = &xfs->fs_info;
+    if (!cksum_wanted(xfs) || count > XFS_SYMLINK_MAXEXTLEN) {
+        return;
+    }
+    try {
+        std::vector<uint8_t> ext((size_t)count * fs->block_size);
+        if (tsk_fs_read(fs, (TSK_OFF_T)addr * fs->block_size,
+                reinterpret_cast<char *>(ext.data()),
+                ext.size()) != (ssize_t)ext.size()) {
+            tsk_error_reset();
+            return;
+        }
+        check_block_cksum(
+            xfs, ext.data(), ext.size(), XFS_SYMLINK_CRC_OFF, addr);
+    }
+    catch (const std::bad_alloc &) {
+        // Not verified; the target itself was read.
+        tsk_error_reset();
+    }
+}
+
+/*
  * Reads the `size` bytes of a remote symlink's target into `out`, from the
  * extent records in data fork `d`: the extents map the target from file
  * block 0 without holes, and on v5 each starts with a header saying which
@@ -885,6 +964,7 @@ remote_target(XFS_INFO *xfs, const DinodeView &d, char *out, size_t size)
                 tsk_getu32(TSK_BIG_ENDIAN, h->sl_bytes) != take) {
                 return Target::NONE;
             }
+            check_symlink_cksum(xfs, addr, e.count);
         }
         memcpy(out + done, buf + hdr, take);
         done += take;
@@ -1053,6 +1133,7 @@ bmbt_subtree(BmbtWalk &walk, uint64_t fsblock, unsigned level)
         numrecs > maxrecs) {
         return fork_corrupt();
     }
+    check_block_cksum(xfs, b, buf.size(), XFS_BTREE_LBLOCK_CRC_OFF, addr);
     if (level > 0) {
         const uint8_t *ptrs = b + hdr + maxrecs * XFS_BMBT_KEY_SIZE;
         for (size_t i = 0; i < numrecs; ++i) {

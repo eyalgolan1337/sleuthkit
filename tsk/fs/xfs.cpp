@@ -30,9 +30,70 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <new>
+#include <vector>
 
 // The on-disk structures must match the disk layout.
 static_assert(sizeof(xfs_dsb) == 264, "");
+static_assert(offsetof(xfs_dsb, sb_crc) == XFS_SB_CRC_OFF, "");
+
+namespace tsk_xfs {
+
+namespace {
+
+/* The table of the byte-at-a-time CRC-32C (Castagnoli, reflected). */
+struct Crc32cTable {
+    uint32_t t[256];
+    Crc32cTable()
+    {
+        for (uint32_t i = 0; i < 256; ++i) {
+            uint32_t c = i;
+            for (int k = 0; k < 8; ++k) {
+                c = (c & 1) ? (c >> 1) ^ 0x82f63b78 : c >> 1;
+            }
+            t[i] = c;
+        }
+    }
+};
+
+uint32_t
+crc32c(uint32_t crc, const uint8_t *p, size_t n)
+{
+    static const Crc32cTable table;
+    for (size_t i = 0; i < n; ++i) {
+        crc = table.t[(crc ^ p[i]) & 0xff] ^ (crc >> 8);
+    }
+    return crc;
+}
+
+} // namespace
+
+/* Whether the checksum stored at `crc_off` of the `len` bytes at `buf` (a
+ * whole v5 metadata structure, with crc_off + 4 <= len) is theirs. */
+bool
+cksum_good(const uint8_t *buf, size_t len, size_t crc_off)
+{
+    static const uint8_t zeros[4] = {0, 0, 0, 0};
+    uint32_t crc = crc32c(0xffffffff, buf, crc_off);
+    crc = crc32c(crc, zeros, sizeof(zeros));
+    crc = crc32c(crc, buf + crc_off + 4, len - crc_off - 4);
+    return tsk_getu32(TSK_LIT_ENDIAN, buf + crc_off) == ~crc;
+}
+
+/* If checksums are verified (cksum_wanted): verifies the checksum of the
+ * metadata at `buf`, which was read from block `addr`, and reports a wrong
+ * one in the verbose output. */
+void
+check_block_cksum(const XFS_INFO *xfs, const uint8_t *buf, size_t len,
+    size_t crc_off, TSK_DADDR_T addr)
+{
+    if (cksum_wanted(xfs) && !cksum_good(buf, len, crc_off)) {
+        tsk_fprintf(
+            stderr, "xfs: Block %" PRIuDADDR " checksum failed\n", addr);
+    }
+}
+
+} // namespace tsk_xfs
 
 namespace {
 
@@ -89,8 +150,9 @@ ceil_log2(uint32_t n)
  * Checks that the superblock describes a geometry XFS can have: the geometry
  * checks of the kernel's xfs_validate_sb_common, plus the consistency this
  * module relies on to decode inode numbers (sb_inopblog, inodes no larger
- * than a block, at most 32 AG-relative inode bits) and a root inode inside
- * the file system. Mutable counters (icount, ifree, fdblocks) and feature
+ * than a block, at most 32 AG-relative inode bits), sectors no larger than
+ * a block, a size that byte offsets can address and a root inode inside the
+ * file system. Mutable counters (icount, ifree, fdblocks) and feature
  * bits are not checked.
  */
 enum class SbCheck { GOOD, BAD_BLOCK_SIZE, BAD };
@@ -114,6 +176,10 @@ check_superblock(const xfs_dsb &sb)
         (version == XFS_SB_VERSION_5 && v.blocksize < XFS_MIN_CRC_BLOCKSIZE)) {
         return SbCheck::BAD_BLOCK_SIZE;
     }
+    // A sector is no larger than a block.
+    if (sb.sb_sectlog > sb.sb_blocklog) {
+        return SbCheck::BAD;
+    }
     if (sb.sb_inodelog < XFS_DINODE_MIN_LOG ||
         sb.sb_inodelog > XFS_DINODE_MAX_LOG ||
         v.inodesize != (1u << sb.sb_inodelog) ||
@@ -135,6 +201,10 @@ check_superblock(const xfs_dsb &sb)
     // The last AG may be shorter, but not shorter than the minimum.
     const uint64_t full = uint64_t{v.agcount} * v.agblocks;
     if (v.dblocks > full || v.dblocks < full - v.agblocks + XFS_MIN_AG_BLOCKS) {
+        return SbCheck::BAD;
+    }
+    // Every byte of the file system has an offset (TSK_OFF_T).
+    if (v.dblocks > (uint64_t)INT64_MAX / v.blocksize) {
         return SbCheck::BAD;
     }
     if (sb.sb_dirblklog > XFS_MAX_BLOCKSIZE_LOG - sb.sb_blocklog) {
@@ -579,6 +649,24 @@ xfs_open(TSK_IMG_INFO *img_info, TSK_OFF_T offset, TSK_FS_TYPE_ENUM ftype,
     fs->istat = xfs_istat;
     fs->name_cmp = tsk_fs_unix_name_cmp;
     fs->close = xfs_close;
+
+    // The superblock's checksum covers its sector. If the sector can't be
+    // read, or there is no memory for it, it is not verified.
+    if (tsk_xfs::cksum_wanted(xfs)) {
+        try {
+            std::vector<uint8_t> sector(v.sectsize);
+            if (tsk_fs_read(fs, 0, reinterpret_cast<char *>(sector.data()),
+                    sector.size()) == (ssize_t)sector.size() &&
+                !tsk_xfs::cksum_good(
+                    sector.data(), sector.size(), XFS_SB_CRC_OFF)) {
+                tsk_fprintf(stderr, "xfs_open: superblock checksum failed\n");
+            }
+        }
+        catch (const std::bad_alloc &) {
+            tsk_error_reset();
+        }
+        tsk_error_reset();
+    }
 
     if (tsk_verbose) {
         tsk_fprintf(stderr,

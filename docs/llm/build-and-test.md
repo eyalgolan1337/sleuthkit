@@ -249,6 +249,7 @@ make -C unit_tests/base check                    # cppunit tests (only if CPPUNI
 ./unit_tests/base/test_base                      # run them directly
 make -C unit_tests/fs check                      # fs layer cppunit tests (makes their data first)
 ./unit_tests/fs/test_fs                          # run them directly (after the data exists)
+./unit_tests/fs/test_fs XfsCorruptTest           # only the suites whose names contain the argument
 (cd tests && ./read_apis /path/to/image/dir)     # run an API test program by hand
 (cd tests && ./fs_thread_test -f ntfs img.dd 4 2) # args: [-f fstype] [-o imgoffset] [-v] image nthreads niters
 grep CPPUNIT_TRUE config.status                  # "#" means unit_tests/ is not built

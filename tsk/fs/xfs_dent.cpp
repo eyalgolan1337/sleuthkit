@@ -17,6 +17,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <new>
 #include <vector>
 
 namespace tsk_xfs {
@@ -86,8 +87,8 @@ dir_corrupt()
  * The entries of a short-form directory, `size` bytes of `data` (the data
  * fork): "." (the directory, `inum`) and ".." (the parent in the header),
  * both directories as the kernel's readdir reports them, then the stored
- * entries. An entry or header that doesn't fit in `size`, or an empty name,
- * is TSK_COR (TSK_ERR_FS_CORRUPT).
+ * entries. An entry or header that doesn't fit in `size`, an empty name, or
+ * an inode number that no inode has, is TSK_COR (TSK_ERR_FS_CORRUPT).
  */
 TSK_RETVAL_ENUM
 parse_shortform(const XFS_INFO *xfs, TSK_FS_DIR *fs_dir, TSK_FS_NAME *fs_name,
@@ -107,10 +108,13 @@ parse_shortform(const XFS_INFO *xfs, TSK_FS_DIR *fs_dir, TSK_FS_NAME *fs_name,
     if (size < pos) {
         return dir_corrupt();
     }
+    const TSK_INUM_T parent = get_ino(data + XFS_DIR2_SF_PARENT);
+    if (!inum_in_fs(xfs, parent)) {
+        return dir_corrupt();
+    }
     static const uint8_t dot[] = {'.', '.'};
     if (!add_name(fs_dir, fs_name, dot, 1, inum, TSK_FS_NAME_TYPE_DIR) ||
-        !add_name(fs_dir, fs_name, dot, 2, get_ino(data + XFS_DIR2_SF_PARENT),
-            TSK_FS_NAME_TYPE_DIR)) {
+        !add_name(fs_dir, fs_name, dot, 2, parent, TSK_FS_NAME_TYPE_DIR)) {
         return TSK_ERR;
     }
     const size_t ftype_size = xfs->has_ftype ? 1 : 0;
@@ -126,8 +130,11 @@ parse_shortform(const XFS_INFO *xfs, TSK_FS_DIR *fs_dir, TSK_FS_NAME *fs_name,
         }
         const uint8_t *name = data + pos + XFS_DIR2_SF_ENTRY_NAME;
         const TSK_FS_NAME_TYPE_ENUM type = entry_type(xfs, name[namelen]);
-        if (!add_name(fs_dir, fs_name, name, namelen,
-                get_ino(name + namelen + ftype_size), type)) {
+        const TSK_INUM_T ino = get_ino(name + namelen + ftype_size);
+        if (!inum_in_fs(xfs, ino)) {
+            return dir_corrupt();
+        }
+        if (!add_name(fs_dir, fs_name, name, namelen, ino, type)) {
             return TSK_ERR;
         }
         pos = end;
@@ -140,8 +147,8 @@ parse_shortform(const XFS_INFO *xfs, TSK_FS_DIR *fs_dir, TSK_FS_NAME *fs_name,
  * stored, "." and ".." included: a data block, or, if `single` (the
  * directory has one block), a block directory's block, whose entries end at
  * its leaf entries. Unused regions are skipped. A block whose magic, leaf
- * count, unused region or entry doesn't fit, or an empty name, is TSK_COR
- * (TSK_ERR_FS_CORRUPT).
+ * count, unused region or entry doesn't fit, an empty name, or an inode
+ * number that no inode has, is TSK_COR (TSK_ERR_FS_CORRUPT).
  */
 TSK_RETVAL_ENUM
 parse_block(const XFS_INFO *xfs, TSK_FS_DIR *fs_dir, TSK_FS_NAME *fs_name,
@@ -194,8 +201,11 @@ parse_block(const XFS_INFO *xfs, TSK_FS_DIR *fs_dir, TSK_FS_NAME *fs_name,
         }
         const uint8_t *name = buf + pos + XFS_DIR2_DATA_ENTRY_NAME;
         const TSK_FS_NAME_TYPE_ENUM type = entry_type(xfs, name[namelen]);
-        if (!add_name(fs_dir, fs_name, name, namelen,
-                tsk_getu64(TSK_BIG_ENDIAN, buf + pos), type)) {
+        const TSK_INUM_T ino = tsk_getu64(TSK_BIG_ENDIAN, buf + pos);
+        if (!inum_in_fs(xfs, ino)) {
+            return dir_corrupt();
+        }
+        if (!add_name(fs_dir, fs_name, name, namelen, ino, type)) {
             return TSK_ERR;
         }
         pos += size;
@@ -260,6 +270,9 @@ read_blocks(const XFS_INFO *xfs, TSK_FS_DIR *fs_dir, TSK_FS_NAME *fs_name)
                 }
                 return TSK_ERR;
             }
+            check_block_cksum(xfs,
+                reinterpret_cast<const uint8_t *>(buf.data()), dirblksize,
+                XFS_DIR3_DATA_CRC_OFF, run->addr + (at - run->offset));
             const TSK_RETVAL_ENUM ret = parse_block(xfs, fs_dir, fs_name,
                 reinterpret_cast<const uint8_t *>(buf.data()), single);
             if (ret != TSK_OK) {
@@ -304,7 +317,7 @@ read_dir(const XFS_INFO *xfs, TSK_FS_DIR *fs_dir, TSK_FS_NAME *fs_name)
  */
 TSK_RETVAL_ENUM
 xfs_dir_open_meta(TSK_FS_INFO *fs, TSK_FS_DIR **a_fs_dir, TSK_INUM_T inum, int)
-{
+try {
     const XFS_INFO *xfs = reinterpret_cast<const XFS_INFO *>(fs);
     if (inum < fs->first_inum || inum > fs->last_inum) {
         tsk_error_reset();
@@ -349,9 +362,22 @@ xfs_dir_open_meta(TSK_FS_INFO *fs, TSK_FS_DIR **a_fs_dir, TSK_INUM_T inum, int)
     if (fs_name == NULL) {
         return TSK_ERR;
     }
-    const TSK_RETVAL_ENUM ret = read_dir(xfs, fs_dir, fs_name);
+    TSK_RETVAL_ENUM ret = TSK_ERR;
+    try {
+        ret = read_dir(xfs, fs_dir, fs_name);
+    }
+    catch (const std::bad_alloc &) {
+        tsk_fs_name_free(fs_name);
+        throw;
+    }
     tsk_fs_name_free(fs_name);
     return ret;
+}
+catch (const std::bad_alloc &) {
+    // The block buffers: no exception reaches a C caller.
+    tsk_error_reset();
+    tsk_error_set_errno(TSK_ERR_AUX_MALLOC);
+    return TSK_ERR;
 }
 
 } // namespace tsk_xfs
