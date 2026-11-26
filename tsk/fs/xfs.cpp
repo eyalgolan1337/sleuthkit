@@ -5,10 +5,10 @@
  *
  * Read-only XFS support (the fork's, #11).
  *
- * The opener (superblock checks and the TSK_FS_INFO geometry), fsstat, and
- * the callbacks that later steps of #11 fill in. Inodes and file content are
- * in xfs_meta.cpp, directories in xfs_dent.cpp; tsk_xfs.h has what the files
- * share. See docs/llm/fs.md ("XFS").
+ * The opener (superblock checks and the TSK_FS_INFO geometry), fsstat, the
+ * block walk, and fscheck, which is not implemented. Inodes, the inode walk
+ * and file content are in xfs_meta.cpp, directories in xfs_dent.cpp;
+ * tsk_xfs.h has what the files share. See docs/llm/fs.md ("XFS").
  *
  * Addresses:
  * - A TSK block address is linear: AG number * sb_agblocks + AG block
@@ -39,6 +39,7 @@ namespace {
 using tsk_xfs::set_unsupported;
 using tsk_xfs::xfs_dir_open_meta;
 using tsk_xfs::xfs_inode_lookup;
+using tsk_xfs::xfs_inode_walk;
 using tsk_xfs::xfs_istat;
 using tsk_xfs::xfs_load_attrs;
 
@@ -154,30 +155,88 @@ check_superblock(const xfs_dsb &sb)
     return SbCheck::GOOD;
 }
 
-/* --- Callbacks of later steps: each fails with a TSK error. --- */
+/* --- Blocks --- */
 
-uint8_t
-xfs_inode_walk(TSK_FS_INFO *, TSK_INUM_T, TSK_INUM_T, TSK_FS_META_FLAG_ENUM,
-    TSK_FS_META_WALK_CB, void *)
-{
-    set_unsupported();
-    return 1;
-}
-
-uint8_t
-xfs_block_walk(TSK_FS_INFO *, TSK_DADDR_T, TSK_DADDR_T,
-    TSK_FS_BLOCK_WALK_FLAG_ENUM, TSK_FS_BLOCK_WALK_CB, void *)
-{
-    set_unsupported();
-    return 1;
-}
-
+/*
+ * block_getflags: every block is allocated. The free-space B+trees, which
+ * say which blocks are free, are not read yet, and metadata and content
+ * blocks are not told apart, so no block is META or CONT.
+ */
 TSK_FS_BLOCK_FLAG_ENUM
 xfs_block_getflags(TSK_FS_INFO *, TSK_DADDR_T)
 {
-    // Allocation state is not known yet: no flags.
-    return TSK_FS_BLOCK_FLAG_UNUSED;
+    return TSK_FS_BLOCK_FLAG_ALLOC;
 }
+
+/*
+ * block_walk: the blocks from `start` to `end`, in order, with the flags of
+ * xfs_block_getflags, as ext's walk does: a block is skipped if it has an
+ * allocation or category flag that `flags` doesn't ask for (no ALLOC or
+ * UNALLOC flag asks for both, and likewise META and CONT). Errors: a range
+ * outside the file system's (TSK_ERR_FS_WALK_RNG); a block that can't be
+ * read, also past the end of an image cut short (TSK_ERR_FS_READ).
+ */
+uint8_t
+xfs_block_walk(TSK_FS_INFO *fs, TSK_DADDR_T start, TSK_DADDR_T end,
+    TSK_FS_BLOCK_WALK_FLAG_ENUM flags, TSK_FS_BLOCK_WALK_CB action, void *ptr)
+{
+    tsk_error_reset();
+    if (start < fs->first_block || start > fs->last_block ||
+        end < fs->first_block || end > fs->last_block || end < start) {
+        tsk_error_set_errno(TSK_ERR_FS_WALK_RNG);
+        return 1;
+    }
+    unsigned want = flags;
+    if ((want &
+            (TSK_FS_BLOCK_WALK_FLAG_ALLOC | TSK_FS_BLOCK_WALK_FLAG_UNALLOC)) ==
+        0) {
+        want |= TSK_FS_BLOCK_WALK_FLAG_ALLOC | TSK_FS_BLOCK_WALK_FLAG_UNALLOC;
+    }
+    if ((want & (TSK_FS_BLOCK_WALK_FLAG_META | TSK_FS_BLOCK_WALK_FLAG_CONT)) ==
+        0) {
+        want |= TSK_FS_BLOCK_WALK_FLAG_META | TSK_FS_BLOCK_WALK_FLAG_CONT;
+    }
+    TSK_FS_BLOCK *block = tsk_fs_block_alloc(fs);
+    if (block == NULL) {
+        return 1;
+    }
+    uint8_t ret = 0;
+    for (TSK_DADDR_T addr = start; addr <= end; ++addr) {
+        unsigned myflags = xfs_block_getflags(fs, addr);
+        if (((myflags & TSK_FS_BLOCK_FLAG_META) &&
+                !(want & TSK_FS_BLOCK_WALK_FLAG_META)) ||
+            ((myflags & TSK_FS_BLOCK_FLAG_CONT) &&
+                !(want & TSK_FS_BLOCK_WALK_FLAG_CONT)) ||
+            ((myflags & TSK_FS_BLOCK_FLAG_ALLOC) &&
+                !(want & TSK_FS_BLOCK_WALK_FLAG_ALLOC)) ||
+            ((myflags & TSK_FS_BLOCK_FLAG_UNALLOC) &&
+                !(want & TSK_FS_BLOCK_WALK_FLAG_UNALLOC))) {
+            continue;
+        }
+        if (want & TSK_FS_BLOCK_WALK_FLAG_AONLY) {
+            myflags |= TSK_FS_BLOCK_FLAG_AONLY;
+        }
+        // NOLINTBEGIN(clang-analyzer-optin.core.EnumCastOutOfRange): flags
+        const TSK_FS_BLOCK_FLAG_ENUM bflags = (TSK_FS_BLOCK_FLAG_ENUM)myflags;
+        // NOLINTEND(clang-analyzer-optin.core.EnumCastOutOfRange)
+        if (tsk_fs_block_get_flag(fs, block, addr, bflags) == NULL) {
+            ret = 1;
+            break;
+        }
+        const TSK_WALK_RET_ENUM r = action(block, ptr);
+        if (r == TSK_WALK_STOP) {
+            break;
+        }
+        if (r == TSK_WALK_ERROR) {
+            ret = 1;
+            break;
+        }
+    }
+    tsk_fs_block_free(block);
+    return ret;
+}
+
+/* --- Not implemented: fails with a TSK error. --- */
 
 uint8_t
 xfs_fscheck(TSK_FS_INFO *, FILE *)

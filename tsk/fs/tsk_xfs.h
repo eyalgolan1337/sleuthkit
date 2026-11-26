@@ -297,6 +297,10 @@ typedef struct {
  * free too). A node's key is an ir_startino, its pointer an AG block, both
  * 4 bytes. */
 #define XFS_INODES_PER_CHUNK 64
+/* With sparse inode chunks (XFS_SB_FEAT_INCOMPAT_SPINODES), ir_counts is a
+ * 2-byte hole mask, one bit for each 4 inodes of the chunk that are not
+ * there, then the inode count and the free count (1 byte each). */
+#define XFS_INODES_PER_HOLEMASK_BIT 4
 typedef struct {
     uint8_t ir_startino[4];
     uint8_t ir_counts[4]; /* free count, or sparse holemask and counts */
@@ -422,6 +426,9 @@ struct DinodeView {
 DinodeView dinode_view(const XFS_INFO *xfs, const uint8_t *raw);
 uint8_t xfs_inode_lookup(
     TSK_FS_INFO *fs, TSK_FS_FILE *a_fs_file, TSK_INUM_T inum);
+uint8_t xfs_inode_walk(TSK_FS_INFO *fs, TSK_INUM_T start_inum,
+    TSK_INUM_T end_inum, TSK_FS_META_FLAG_ENUM flags,
+    TSK_FS_META_WALK_CB a_action, void *a_ptr);
 uint8_t xfs_load_attrs(TSK_FS_FILE *fs_file);
 uint8_t xfs_istat(TSK_FS_INFO *fs, TSK_FS_ISTAT_FLAG_ENUM istat_flags, FILE *h,
     TSK_INUM_T inum, TSK_DADDR_T numblock, int32_t sec_skew);

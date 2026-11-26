@@ -6,9 +6,9 @@
  * Read-only XFS support (the fork's, #11): inodes and file content.
  *
  * Inode numbers and AG addresses, inode allocation (the AG's inode B+tree),
- * inode lookup, symlink targets, the data fork as the default attribute, and
- * istat. See
- * xfs.cpp for the address scheme and docs/llm/fs.md ("XFS").
+ * inode lookup, the inode walk, symlink targets, the data fork as the
+ * default attribute, and istat. See xfs.cpp for the address scheme and
+ * docs/llm/fs.md ("XFS").
  *
  * C++14. Nothing here throws: no C++ exception can reach the C callers.
  */
@@ -105,6 +105,41 @@ split_inum(const XFS_INFO *xfs, TSK_INUM_T inum, InodeAddr &a)
 enum class Alloc { ALLOCATED, FREE, FAILED };
 
 /*
+ * The root block and the number of levels of AG `agno`'s inode B+tree, from
+ * its AGI. Errors: a short read (TSK_ERR_FS_READ), an AGI that is not one,
+ * not this AG's, or with a root outside the AG or an impossible level
+ * (TSK_ERR_FS_CORRUPT).
+ */
+bool
+read_agi(XFS_INFO *xfs, uint32_t agno, uint32_t &root, uint32_t &level)
+{
+    TSK_FS_INFO *fs = &xfs->fs_info;
+    xfs_agi agi;
+    const TSK_OFF_T agi_off =
+        (TSK_OFF_T)ag_block(xfs, agno, 0) * fs->block_size +
+        XFS_AGI_SECTOR * xfs->sectsize;
+    const ssize_t cnt =
+        tsk_fs_read(fs, agi_off, reinterpret_cast<char *>(&agi), sizeof(agi));
+    if (cnt != (ssize_t)sizeof(agi)) {
+        if (cnt >= 0) {
+            tsk_error_reset();
+            tsk_error_set_errno(TSK_ERR_FS_READ);
+        }
+        return false;
+    }
+    level = tsk_getu32(TSK_BIG_ENDIAN, agi.agi_level);
+    root = tsk_getu32(TSK_BIG_ENDIAN, agi.agi_root);
+    if (tsk_getu32(TSK_BIG_ENDIAN, agi.agi_magicnum) != XFS_AGI_MAGIC ||
+        tsk_getu32(TSK_BIG_ENDIAN, agi.agi_versionnum) != XFS_AGI_VERSION ||
+        tsk_getu32(TSK_BIG_ENDIAN, agi.agi_seqno) != agno || level == 0 ||
+        level > XFS_BTREE_MAXLEVELS || root >= ag_length(xfs, agno)) {
+        set_corrupt();
+        return false;
+    }
+    return true;
+}
+
+/*
  * Whether the inode at `a` is allocated, as the inode B+tree of its AG
  * says: allocated if a chunk record covers it and its ir_free bit is clear.
  * An inode in no chunk is free. Errors: a short read (TSK_ERR_FS_READ), an
@@ -118,26 +153,9 @@ inode_allocation(XFS_INFO *xfs, const InodeAddr &a)
     const uint32_t agino = (a.agbno << xfs->inopblog) | a.index;
     const uint32_t ag_blocks = ag_length(xfs, a.agno);
 
-    xfs_agi agi;
-    const TSK_OFF_T agi_off =
-        (TSK_OFF_T)ag_block(xfs, a.agno, 0) * fs->block_size +
-        XFS_AGI_SECTOR * xfs->sectsize;
-    const ssize_t cnt =
-        tsk_fs_read(fs, agi_off, reinterpret_cast<char *>(&agi), sizeof(agi));
-    if (cnt != (ssize_t)sizeof(agi)) {
-        if (cnt >= 0) {
-            tsk_error_reset();
-            tsk_error_set_errno(TSK_ERR_FS_READ);
-        }
-        return Alloc::FAILED;
-    }
-    const uint32_t level = tsk_getu32(TSK_BIG_ENDIAN, agi.agi_level);
-    uint32_t block = tsk_getu32(TSK_BIG_ENDIAN, agi.agi_root);
-    if (tsk_getu32(TSK_BIG_ENDIAN, agi.agi_magicnum) != XFS_AGI_MAGIC ||
-        tsk_getu32(TSK_BIG_ENDIAN, agi.agi_versionnum) != XFS_AGI_VERSION ||
-        tsk_getu32(TSK_BIG_ENDIAN, agi.agi_seqno) != a.agno || level == 0 ||
-        level > XFS_BTREE_MAXLEVELS || block >= ag_blocks) {
-        set_corrupt();
+    uint32_t block = 0;
+    uint32_t level = 0;
+    if (!read_agi(xfs, a.agno, block, level)) {
         return Alloc::FAILED;
     }
 
@@ -206,6 +224,100 @@ inode_allocation(XFS_INFO *xfs, const InodeAddr &a)
     }
 }
 
+/* The records of an AG's inode B+tree being collected, in inode order. */
+struct InobtWalk {
+    XFS_INFO *xfs;
+    uint32_t agno;
+    uint64_t next_agino; /* where the next record may start */
+    std::vector<xfs_inobt_rec> recs;
+};
+
+/*
+ * Appends the records of the inode B+tree subtree at AG block `block`, which
+ * must be at `level`, in inode order. Each step down goes down one level,
+ * every node has records and each chunk starts after the one before, so a
+ * tree that loops back on itself is an error, not an endless walk. A leaf
+ * may be empty: the root of an AG without inodes is. Errors: a short read
+ * (TSK_ERR_FS_READ); a block outside the AG, of another magic or level, a
+ * node with no records, a block with too many, or a chunk that overlaps the one
+ * before or is not inside the AG (TSK_ERR_FS_CORRUPT). Chunks need not be
+ * aligned to 64 inodes (on v4 they are aligned to blocks).
+ */
+bool
+inobt_subtree(InobtWalk &walk, uint32_t block, unsigned level)
+{
+    XFS_INFO *xfs = walk.xfs;
+    TSK_FS_INFO *fs = &xfs->fs_info;
+    const uint32_t ag_blocks = ag_length(xfs, walk.agno);
+    if (block >= ag_blocks) {
+        set_corrupt();
+        return false;
+    }
+    std::vector<char> buf(fs->block_size);
+    if (!read_ag_block(xfs, walk.agno, block, buf.data())) {
+        return false;
+    }
+    const bool crc = xfs->version == XFS_SB_VERSION_5;
+    const size_t hdr = crc ? XFS_BTREE_SBLOCK_CRC_LEN : XFS_BTREE_SBLOCK_LEN;
+    const size_t space = fs->block_size - hdr;
+    const uint8_t *b = reinterpret_cast<const uint8_t *>(buf.data());
+    const xfs_btree_sblock *h = reinterpret_cast<const xfs_btree_sblock *>(b);
+    const size_t numrecs = tsk_getu16(TSK_BIG_ENDIAN, h->bb_numrecs);
+    // A leaf holds 16-byte records, a node 4-byte keys and pointers.
+    const size_t maxrecs =
+        level == 0 ? space / sizeof(xfs_inobt_rec) : space / 8;
+    if (tsk_getu32(TSK_BIG_ENDIAN, h->bb_magic) !=
+            (crc ? XFS_IBT_CRC_MAGIC : XFS_IBT_MAGIC) ||
+        tsk_getu16(TSK_BIG_ENDIAN, h->bb_level) != level ||
+        (level > 0 && numrecs == 0) || numrecs > maxrecs) {
+        set_corrupt();
+        return false;
+    }
+    if (level > 0) {
+        const uint8_t *ptrs = b + hdr + maxrecs * 4;
+        for (size_t i = 0; i < numrecs; ++i) {
+            if (!inobt_subtree(walk, tsk_getu32(TSK_BIG_ENDIAN, ptrs + 4 * i),
+                    level - 1)) {
+                return false;
+            }
+        }
+        return true;
+    }
+    // The AG's inode numbers end with its last block.
+    const uint64_t ag_inodes = uint64_t{ag_blocks} << xfs->inopblog;
+    const xfs_inobt_rec *recs =
+        reinterpret_cast<const xfs_inobt_rec *>(b + hdr);
+    for (size_t i = 0; i < numrecs; ++i) {
+        const uint32_t start = tsk_getu32(TSK_BIG_ENDIAN, recs[i].ir_startino);
+        if (start < walk.next_agino ||
+            uint64_t{start} + XFS_INODES_PER_CHUNK > ag_inodes) {
+            set_corrupt();
+            return false;
+        }
+        walk.next_agino = uint64_t{start} + XFS_INODES_PER_CHUNK;
+        walk.recs.push_back(recs[i]);
+    }
+    return true;
+}
+
+/* The records of AG `agno`'s inode B+tree, in inode order. Errors: those of
+ * read_agi and inobt_subtree. */
+bool
+inobt_records(XFS_INFO *xfs, uint32_t agno, std::vector<xfs_inobt_rec> &recs)
+{
+    uint32_t root = 0;
+    uint32_t level = 0;
+    if (!read_agi(xfs, agno, root, level)) {
+        return false;
+    }
+    InobtWalk walk{xfs, agno, 0, {}};
+    if (!inobt_subtree(walk, root, level - 1)) {
+        return false;
+    }
+    recs.swap(walk.recs);
+    return true;
+}
+
 /* --- Inodes --- */
 
 /* The size of the inode core of an inode version: the data fork follows. */
@@ -242,15 +354,17 @@ namespace {
 
 /* Whether the raw inode is a sound one for `inum`: the magic, an inode
  * version the file system's version allows (v5: 3 only, v4: 1 or 2), on v3
- * its own inode number, a mode, and a data fork inside the inode. */
+ * its own inode number, a mode (if `need_mode`: a free inode has none), and
+ * a data fork inside the inode. */
 bool
-dinode_sound(const XFS_INFO *xfs, TSK_INUM_T inum, const uint8_t *raw)
+dinode_sound(
+    const XFS_INFO *xfs, TSK_INUM_T inum, const uint8_t *raw, bool need_mode)
 {
     const xfs_dinode *core = reinterpret_cast<const xfs_dinode *>(raw);
     const uint8_t v = core->di_version;
     if (tsk_getu16(TSK_BIG_ENDIAN, core->di_magic) != XFS_DINODE_MAGIC ||
         (xfs->version == XFS_SB_VERSION_5 ? v != 3 : (v != 1 && v != 2)) ||
-        tsk_getu16(TSK_BIG_ENDIAN, core->di_mode) == 0) {
+        (need_mode && tsk_getu16(TSK_BIG_ENDIAN, core->di_mode) == 0)) {
         return false;
     }
     if (v == 3 && tsk_getu64(TSK_BIG_ENDIAN, core->di_ino) != inum) {
@@ -259,11 +373,36 @@ dinode_sound(const XFS_INFO *xfs, TSK_INUM_T inum, const uint8_t *raw)
     return dinode_core_size(v) + size_t{core->di_forkoff} * 8 < xfs->inodesize;
 }
 
+/* Reads the inode at `a` (number `inum`) into `raw`, the inode size of the
+ * file system. On a short read: TSK_ERR_FS_READ. */
+bool
+read_dinode(XFS_INFO *xfs, TSK_INUM_T inum, const InodeAddr &a, uint8_t *raw)
+{
+    TSK_FS_INFO *fs = &xfs->fs_info;
+    const TSK_OFF_T addr =
+        (TSK_OFF_T)ag_block(xfs, a.agno, a.agbno) * fs->block_size +
+        (TSK_OFF_T)a.index * xfs->inodesize;
+    const ssize_t cnt =
+        tsk_fs_read(fs, addr, reinterpret_cast<char *>(raw), xfs->inodesize);
+    if (cnt != (ssize_t)xfs->inodesize) {
+        if (cnt >= 0) {
+            tsk_error_reset();
+            tsk_error_set_errno(TSK_ERR_FS_READ);
+        }
+        tsk_error_set_errstr2("xfs_dinode_load: Inode %" PRIuINUM
+                              " from %" PRIu64,
+            inum, (uint64_t)addr);
+        return false;
+    }
+    return true;
+}
+
 /*
  * Reads allocated inode `inum` into `raw` (the inode size of the file
  * system). Errors: an address outside the file system or not an allocated
  * inode (TSK_ERR_FS_INODE_NUM), an inode that is not a sound one
- * (TSK_ERR_FS_INODE_COR), and the errors of inode_allocation.
+ * (TSK_ERR_FS_INODE_COR), and the errors of inode_allocation and
+ * read_dinode.
  */
 uint8_t
 xfs_dinode_load(XFS_INFO *xfs, TSK_INUM_T inum, uint8_t *raw)
@@ -284,22 +423,10 @@ xfs_dinode_load(XFS_INFO *xfs, TSK_INUM_T inum, uint8_t *raw)
         tsk_error_set_errstr("xfs_dinode_load: address: %" PRIuINUM, inum);
         return 1;
     }
-    const TSK_OFF_T addr =
-        (TSK_OFF_T)ag_block(xfs, a.agno, a.agbno) * fs->block_size +
-        (TSK_OFF_T)a.index * xfs->inodesize;
-    const ssize_t cnt =
-        tsk_fs_read(fs, addr, reinterpret_cast<char *>(raw), xfs->inodesize);
-    if (cnt != (ssize_t)xfs->inodesize) {
-        if (cnt >= 0) {
-            tsk_error_reset();
-            tsk_error_set_errno(TSK_ERR_FS_READ);
-        }
-        tsk_error_set_errstr2("xfs_dinode_load: Inode %" PRIuINUM
-                              " from %" PRIu64,
-            inum, (uint64_t)addr);
+    if (!read_dinode(xfs, inum, a, raw)) {
         return 1;
     }
-    if (!dinode_sound(xfs, inum, raw)) {
+    if (!dinode_sound(xfs, inum, raw, true)) {
         tsk_error_reset();
         tsk_error_set_errno(TSK_ERR_FS_INODE_COR);
         tsk_error_set_errstr("xfs_dinode_load: address: %" PRIuINUM, inum);
@@ -347,18 +474,16 @@ meta_type(uint16_t mode)
     }
 }
 
-/* Fills `meta` from the raw inode in meta->content_ptr. */
+/* Fills `meta` from the raw inode in meta->content_ptr, with `flags`. */
 void
-dinode_copy(const XFS_INFO *xfs, TSK_FS_META *meta, TSK_INUM_T inum)
+dinode_copy(const XFS_INFO *xfs, TSK_FS_META *meta, TSK_INUM_T inum,
+    TSK_FS_META_FLAG_ENUM flags)
 {
     const DinodeView d =
         dinode_view(xfs, static_cast<const uint8_t *>(meta->content_ptr));
     const xfs_dinode *core = d.core;
     meta->addr = inum;
-    // NOLINTBEGIN(clang-analyzer-optin.core.EnumCastOutOfRange): flags
-    meta->flags =
-        (TSK_FS_META_FLAG_ENUM)(TSK_FS_META_FLAG_ALLOC | TSK_FS_META_FLAG_USED);
-    // NOLINTEND(clang-analyzer-optin.core.EnumCastOutOfRange)
+    meta->flags = flags;
     meta->type = meta_type(d.mode);
     // TSK's permission bits have the Unix values.
     meta->mode = (TSK_FS_META_MODE_ENUM)(d.mode & 07777);
@@ -420,8 +545,217 @@ xfs_inode_lookup(TSK_FS_INFO *fs, TSK_FS_FILE *a_fs_file, TSK_INUM_T inum)
     if (xfs_dinode_load(xfs, inum, static_cast<uint8_t *>(meta->content_ptr))) {
         return 1;
     }
-    dinode_copy(xfs, meta, inum);
+    // NOLINTBEGIN(clang-analyzer-optin.core.EnumCastOutOfRange): flags
+    dinode_copy(xfs, meta, inum,
+        (TSK_FS_META_FLAG_ENUM)(TSK_FS_META_FLAG_ALLOC |
+            TSK_FS_META_FLAG_USED));
+    // NOLINTEND(clang-analyzer-optin.core.EnumCastOutOfRange)
     return load_link(xfs, meta);
+}
+
+namespace {
+
+/* The state of an inode walk: the request and the file it hands out. */
+struct InodeWalk {
+    XFS_INFO *xfs;
+    TSK_INUM_T start;
+    TSK_INUM_T end; /* the last inode number to visit */
+    unsigned flags; /* TSK_FS_META_FLAG_ENUM, ALLOC/UNALLOC and USED/UNUSED
+                     * both set if neither was */
+    TSK_FS_META_WALK_CB action;
+    void *ptr;
+    TSK_FS_FILE *file;
+};
+
+enum class Visit { CONT, STOP, FAILED };
+
+/*
+ * Visits inode `inum` if the walk's flags want it: reads it, gives it its
+ * flags (allocated inodes ALLOC | USED; free ones UNALLOC, and USED if their
+ * ctime is not 0 on disk, as ext decides), fills the walk's file and calls
+ * the action. An inode that is not a sound one (a free inode needs no mode)
+ * is skipped. Errors: a short read (TSK_ERR_FS_READ), those of load_link,
+ * and the action's.
+ */
+Visit
+visit_inode(InodeWalk &walk, TSK_INUM_T inum, bool allocated)
+{
+    XFS_INFO *xfs = walk.xfs;
+    TSK_FS_INFO *fs = &xfs->fs_info;
+    unsigned myflags =
+        allocated ? TSK_FS_META_FLAG_ALLOC : TSK_FS_META_FLAG_UNALLOC;
+    if ((walk.flags & myflags) != myflags) {
+        return Visit::CONT;
+    }
+    InodeAddr a{};
+    split_inum(xfs, inum, a);
+    TSK_FS_META *meta = walk.file->meta;
+    tsk_fs_meta_reset(meta);
+    uint8_t *raw = static_cast<uint8_t *>(meta->content_ptr);
+    if (!read_dinode(xfs, inum, a, raw)) {
+        return Visit::FAILED;
+    }
+    if (!dinode_sound(xfs, inum, raw, allocated)) {
+        return Visit::CONT;
+    }
+    const xfs_dinode *core = reinterpret_cast<const xfs_dinode *>(raw);
+    const bool used =
+        allocated || tsk_getu64(TSK_BIG_ENDIAN, core->di_ctime.t) != 0;
+    myflags |= used ? TSK_FS_META_FLAG_USED : TSK_FS_META_FLAG_UNUSED;
+    if ((walk.flags & myflags) != myflags) {
+        return Visit::CONT;
+    }
+    // Orphans: free inodes that no free name refers to.
+    if (!allocated && (walk.flags & TSK_FS_META_FLAG_ORPHAN) &&
+        tsk_fs_dir_find_inum_named(fs, inum)) {
+        return Visit::CONT;
+    }
+    // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange): flags
+    dinode_copy(xfs, meta, inum, (TSK_FS_META_FLAG_ENUM)myflags);
+    if (load_link(xfs, meta)) {
+        return Visit::FAILED;
+    }
+    const TSK_WALK_RET_ENUM ret = walk.action(walk.file, walk.ptr);
+    if (ret == TSK_WALK_STOP) {
+        return Visit::STOP;
+    }
+    return ret == TSK_WALK_ERROR ? Visit::FAILED : Visit::CONT;
+}
+
+/*
+ * Visits the inodes of AG `agno` in the walk's range, in inode order: those
+ * of its inode B+tree's chunks, except the holes of sparse chunks, which are
+ * not inodes. Errors: those of inobt_records and visit_inode.
+ */
+Visit
+walk_ag(InodeWalk &walk, uint32_t agno)
+{
+    XFS_INFO *xfs = walk.xfs;
+    std::vector<xfs_inobt_rec> recs;
+    if (!inobt_records(xfs, agno, recs)) {
+        return Visit::FAILED;
+    }
+    // Sparse chunks: the top 16 bits of ir_counts are the hole mask, one bit
+    // for each 4 inodes.
+    const bool sparse = xfs->version == XFS_SB_VERSION_5 &&
+        (tsk_getu32(TSK_BIG_ENDIAN, xfs->sb.sb_features_incompat) &
+            XFS_SB_FEAT_INCOMPAT_SPINODES);
+    const unsigned agino_bits = xfs->agblklog + xfs->inopblog;
+    const TSK_INUM_T base = TSK_INUM_T{agno} << agino_bits;
+    for (const xfs_inobt_rec &rec : recs) {
+        const TSK_INUM_T first =
+            base + tsk_getu32(TSK_BIG_ENDIAN, rec.ir_startino);
+        if (first > walk.end) {
+            break;
+        }
+        if (first + XFS_INODES_PER_CHUNK <= walk.start) {
+            continue;
+        }
+        const uint64_t free_mask = tsk_getu64(TSK_BIG_ENDIAN, rec.ir_free);
+        const uint16_t holes =
+            sparse ? tsk_getu16(TSK_BIG_ENDIAN, rec.ir_counts) : 0;
+        for (unsigned i = 0; i < XFS_INODES_PER_CHUNK; ++i) {
+            const TSK_INUM_T inum = first + i;
+            if (inum < walk.start || inum > walk.end ||
+                ((holes >> (i / XFS_INODES_PER_HOLEMASK_BIT)) & 1)) {
+                continue;
+            }
+            const Visit v =
+                visit_inode(walk, inum, ((free_mask >> i) & 1) == 0);
+            if (v != Visit::CONT) {
+                return v;
+            }
+        }
+    }
+    return Visit::CONT;
+}
+
+} // namespace
+
+/*
+ * inode_walk: the inodes from `start_inum` to `end_inum` in inode order,
+ * found through each AG's inode B+tree: the allocated inodes and, as
+ * unallocated ones, the free inodes of allocated chunks. Numbers in no chunk
+ * are not inodes and are not visited. last_inum is the virtual $OrphanFiles,
+ * which XFS doesn't have yet: not visited. Errors: a range outside the
+ * file system's (TSK_ERR_FS_WALK_RNG), and those of walk_ag.
+ */
+uint8_t
+xfs_inode_walk(TSK_FS_INFO *fs, TSK_INUM_T start_inum, TSK_INUM_T end_inum,
+    TSK_FS_META_FLAG_ENUM flags, TSK_FS_META_WALK_CB a_action, void *a_ptr)
+{
+    const char *myname = "xfs_inode_walk";
+    XFS_INFO *xfs = reinterpret_cast<XFS_INFO *>(fs);
+    tsk_error_reset();
+    if (start_inum < fs->first_inum || start_inum > fs->last_inum) {
+        tsk_error_set_errno(TSK_ERR_FS_WALK_RNG);
+        tsk_error_set_errstr(
+            "%s: start inode: %" PRIu64 "", myname, (uint64_t)start_inum);
+        return 1;
+    }
+    if (end_inum < fs->first_inum || end_inum > fs->last_inum ||
+        end_inum < start_inum) {
+        tsk_error_set_errno(TSK_ERR_FS_WALK_RNG);
+        tsk_error_set_errstr(
+            "%s: end inode: %" PRIu64 "", myname, (uint64_t)end_inum);
+        return 1;
+    }
+
+    unsigned myflags = flags;
+    if (myflags & TSK_FS_META_FLAG_ORPHAN) {
+        myflags |= TSK_FS_META_FLAG_UNALLOC | TSK_FS_META_FLAG_USED;
+        myflags &= ~(TSK_FS_META_FLAG_ALLOC | TSK_FS_META_FLAG_UNUSED);
+    }
+    else {
+        if ((myflags & (TSK_FS_META_FLAG_ALLOC | TSK_FS_META_FLAG_UNALLOC)) ==
+            0) {
+            myflags |= TSK_FS_META_FLAG_ALLOC | TSK_FS_META_FLAG_UNALLOC;
+        }
+        if ((myflags & (TSK_FS_META_FLAG_USED | TSK_FS_META_FLAG_UNUSED)) ==
+            0) {
+            myflags |= TSK_FS_META_FLAG_USED | TSK_FS_META_FLAG_UNUSED;
+        }
+    }
+    if ((myflags & TSK_FS_META_FLAG_ORPHAN) &&
+        tsk_fs_dir_load_inum_named(fs) != TSK_OK) {
+        return 1;
+    }
+    // No $OrphanFiles: the last real inode number is below last_inum.
+    if (end_inum == TSK_FS_ORPHANDIR_INUM(fs)) {
+        if (start_inum == end_inum) {
+            return 0;
+        }
+        --end_inum;
+    }
+
+    TSK_FS_FILE *file = tsk_fs_file_alloc(fs);
+    if (file == NULL) {
+        return 1;
+    }
+    file->meta = tsk_fs_meta_alloc(xfs->inodesize);
+    if (file->meta == NULL) {
+        tsk_fs_file_close(file);
+        return 1;
+    }
+    InodeWalk walk{xfs, start_inum, end_inum, myflags, a_action, a_ptr, file};
+    const unsigned agino_bits = xfs->agblklog + xfs->inopblog;
+    Visit v = Visit::CONT;
+    try {
+        for (uint64_t agno = start_inum >> agino_bits;
+            agno <= (end_inum >> agino_bits) && agno < xfs->agcount &&
+            v == Visit::CONT;
+            ++agno) {
+            v = walk_ag(walk, (uint32_t)agno);
+        }
+    }
+    catch (const std::bad_alloc &) {
+        // The record and block buffers: no exception reaches a C caller.
+        tsk_error_reset();
+        tsk_error_set_errno(TSK_ERR_AUX_MALLOC);
+        v = Visit::FAILED;
+    }
+    tsk_fs_file_close(file);
+    return v == Visit::FAILED ? 1 : 0;
 }
 
 namespace {
@@ -926,8 +1260,8 @@ struct PrintAddr {
 
 /* File walk callback of istat: each block's address, 0 for a hole, eight
  * per line (as ext's istat prints them). Unlike ext's, it doesn't keep to
- * TSK_FS_BLOCK_FLAG_CONT blocks: XFS has no block flags yet (#44), and its
- * file walk reports content blocks only. */
+ * TSK_FS_BLOCK_FLAG_CONT blocks: XFS blocks are only ALLOC (see
+ * xfs_block_getflags), and its file walk reports content blocks only. */
 TSK_WALK_RET_ENUM
 print_addr_act(TSK_FS_FILE *fs_file, TSK_OFF_T, TSK_DADDR_T addr, char *,
     size_t size, TSK_FS_BLOCK_FLAG_ENUM, void *a_ptr)

@@ -72,7 +72,7 @@ class XfsFixturesTest : public CppUnit::TestFixture {
     CPPUNIT_TEST(testOpenedByTypeName);
     CPPUNIT_TEST(testGeometry);
     CPPUNIT_TEST(testFsstat);
-    CPPUNIT_TEST(testLaterStepsFailWithTskErrors);
+    CPPUNIT_TEST(testFscheckFailsWithTskError);
     CPPUNIT_TEST(testWalkMatchesManifest);
     CPPUNIT_TEST_SUITE_END();
 
@@ -211,9 +211,9 @@ class XfsFixturesTest : public CppUnit::TestFixture {
         }
     }
 
-    // What later steps of #11 implement fails with a TSK error, not a crash:
-    // the inode and block walks (#44).
-    void testLaterStepsFailWithTskErrors()
+    // What XFS doesn't implement fails with a TSK error, not a crash:
+    // fscheck.
+    void testFscheckFailsWithTskError()
     {
         for (const Fixture &f : {V4, V5}) {
             const std::string v = f.variant;
@@ -229,17 +229,12 @@ class XfsFixturesTest : public CppUnit::TestFixture {
             };
 
             tsk_error_reset();
-            CPPUNIT_ASSERT_EQUAL_MESSAGE(v + ": inode walk", 1,
-                static_cast<int>(
-                    tsk_fs_meta_walk(fs.get(), fs->first_inum, fs->last_inum,
-                        TSK_FS_META_FLAG_ALLOC, ignore_meta, nullptr)));
-            failed("inode walk");
-
-            CPPUNIT_ASSERT_EQUAL_MESSAGE(v + ": block walk", 1,
-                static_cast<int>(
-                    tsk_fs_block_walk(fs.get(), fs->first_block, fs->last_block,
-                        TSK_FS_BLOCK_WALK_FLAG_ALLOC, ignore_block, nullptr)));
-            failed("block walk");
+            CPPUNIT_ASSERT_EQUAL_MESSAGE(v + ": fscheck", 1,
+                static_cast<int>(fs->fscheck(fs.get(), stdout)));
+            CPPUNIT_ASSERT_EQUAL_MESSAGE(v + ": fscheck",
+                static_cast<uint32_t>(TSK_ERR_FS_UNSUPFUNC),
+                tsk_error_get_errno());
+            failed("fscheck");
         }
     }
 
@@ -256,16 +251,6 @@ class XfsFixturesTest : public CppUnit::TestFixture {
                 image_path(f), manifest, fstest::inode_known_failures(f));
             CPPUNIT_ASSERT_MESSAGE(v + ": " + walk.report, walk.passed);
         }
-    }
-
-  private:
-    static TSK_WALK_RET_ENUM ignore_meta(TSK_FS_FILE *, void *)
-    {
-        return TSK_WALK_CONT;
-    }
-    static TSK_WALK_RET_ENUM ignore_block(const TSK_FS_BLOCK *, void *)
-    {
-        return TSK_WALK_CONT;
     }
 };
 

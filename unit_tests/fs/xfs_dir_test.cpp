@@ -728,7 +728,7 @@ class XfsDirTest : public CppUnit::TestFixture {
     }
 
     // A number past $OrphanFiles, a file that is not a directory and
-    // $OrphanFiles itself (orphans need the inode walk, #44) don't open as
+    // $OrphanFiles itself (no orphans are recovered in #11) don't open as
     // directories.
     void testOpenErrors()
     {

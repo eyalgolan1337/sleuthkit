@@ -13,7 +13,8 @@
  * test/vm/README.md ("Manifests and the comparison step").
  *
  * check_by_inode does the same comparison without the directory walk: it
- * opens each expected entry by its inode number.
+ * opens each expected entry by its inode number. check_meta_walk does it
+ * with the inode walk (tsk_fs_meta_walk) instead.
  *
  * C++14. Test-only.
  */
@@ -23,7 +24,9 @@
 #include "compare.h"
 #include "manifest.h"
 
+#include <cstdint>
 #include <string>
+#include <vector>
 
 namespace fstest {
 
@@ -67,6 +70,23 @@ WalkCheck check_walk(const std::string &image,
 // to the end, is reported and left out (so it is "missing") or left without
 // its SHA-256. Hard links are opened once per path.
 WalkCheck check_by_inode(const std::string &image,
+    const tskval::Manifest &expected, const std::string &known_failures = "");
+
+// The result of check_meta_walk: the comparison, and every inode number the
+// walk visited, in the order it visited them.
+struct MetaWalkCheck : WalkCheck {
+    std::vector<uint64_t> visited;
+};
+
+// Walks the allocated inodes of the file system that autodetection finds in
+// `image` (tsk_fs_meta_walk from first_inum to last_inum with
+// TSK_FS_META_FLAG_ALLOC), records each visited inode as the walk does
+// (entry_from_meta, under each path that `expected` gives the inode, and the
+// SHA-256 of each regular file's content) and compares the result with
+// `expected` in the same way. An inode is recorded at its first visit only;
+// `visited` shows repeats, and the inodes that `expected` doesn't have.
+// Fails, saying why, if the walk fails.
+MetaWalkCheck check_meta_walk(const std::string &image,
     const tskval::Manifest &expected, const std::string &known_failures = "");
 
 } // namespace fstest
